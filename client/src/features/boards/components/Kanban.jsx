@@ -7,7 +7,12 @@ import { CardForm } from './CardForm';
 import { TitleForm } from '@/components/common/TitleForm';
 
 const priorityBadge = (priority) => {
-  const map = { low: 'badge-low', medium: 'badge-medium', high: 'badge-high', urgent: 'badge-urgent' };
+  const map = {
+    low: 'badge-low',
+    medium: 'badge-medium',
+    high: 'badge-high',
+    urgent: 'badge-urgent',
+  };
   return `badge ${map[priority] || 'badge-medium'}`;
 };
 
@@ -125,14 +130,18 @@ export function Kanban({ board: currentBoard }) {
                                 <p className="description">{card.description}</p>
                               )}
                               <div className="metadata">
-                                <span className={priorityBadge(card.priority)}>{card.priority}</span>
+                                <span className={priorityBadge(card.priority)}>
+                                  {card.priority}
+                                </span>
                                 {card.dueDate && (
                                   <time className="badge badge-label" dateTime={card.dueDate}>
                                     📅 {card.dueDate.slice(0, 10)}
                                   </time>
                                 )}
                                 {card.labels.map((label, i) => (
-                                  <span className="badge badge-label" key={`${label}-${i}`}>{label}</span>
+                                  <span className="badge badge-label" key={`${label}-${i}`}>
+                                    {label}
+                                  </span>
                                 ))}
                               </div>
                               <div className="actions">

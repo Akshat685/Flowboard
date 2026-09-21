@@ -104,13 +104,22 @@ export function CardForm({
         Labels, separated by commas
         <input maxLength={340} {...field('labels')} />
       </label>
-      {error && <div className="error" role="alert">{error}</div>}
+      {error && (
+        <div className="error" role="alert">
+          {error}
+        </div>
+      )}
       <div className="actions">
         <button className="btn btn-primary btn-sm" disabled={locked || stale}>
           {locked && <span className="spinner spinner-sm" aria-hidden="true" />}
           {locked ? 'Saving…' : submitLabel}
         </button>
-        <button className="btn btn-secondary btn-sm" type="button" disabled={locked} onClick={onCancel}>
+        <button
+          className="btn btn-secondary btn-sm"
+          type="button"
+          disabled={locked}
+          onClick={onCancel}
+        >
           Cancel
         </button>
       </div>

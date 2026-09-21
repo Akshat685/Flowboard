@@ -182,14 +182,17 @@ Install once at the repository root. The workspaces link `@flowboard/shared` dir
   "dependencies": {
     "@flowboard/shared": "1.0.0",
     "bcryptjs": "^3.0.2",
+    "compression": "^1.8.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "express-rate-limit": "^8.1.0",
     "helmet": "^8.1.0",
+    "hpp": "^0.2.3",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^9.0.0",
+    "morgan": "^1.12.1",
     "socket.io": "^4.8.1",
     "zod": "^4.1.12"
   },
@@ -331,6 +334,10 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
+import compression from 'compression';
+import hpp from 'hpp';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
@@ -340,15 +347,33 @@ import { AppError } from './errors/AppError.js';
 import { errorHandler } from './middleware/error.middleware.js';
 import { apiRoutes } from './routes/index.js';
 import { mountClient } from './middleware/client.middleware.js';
+
+/**
+ * Recursively strip keys starting with $ or containing . from an object.
+ * Prevents NoSQL injection via req.body (Express 5 compatible — does not touch req.query).
+ */
+function sanitize(value) {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(sanitize);
+  const clean = {};
+  for (const [key, val] of Object.entries(value)) {
+    if (key.startsWith('$') || key.includes('.')) continue;
+    clean[key] = sanitize(val);
+  }
+  return clean;
+}
+
 export function createApplication() {
   const app = express();
   app.set('trust proxy', config.TRUST_PROXY.length ? config.TRUST_PROXY : false);
   const server = createServer(app);
   const allowedOrigin = (origin) => !origin || origin === config.CLIENT_ORIGIN;
+
   const io = new Server(server, {
     cors: { origin: config.CLIENT_ORIGIN, credentials: true },
     allowRequest: (req, done) => done(null, allowedOrigin(req.headers.origin)),
   });
+
   io.use(async (socket, next) => {
     try {
       // Cookie-parser only reads headers and writes cookie fields in this handshake.
@@ -360,6 +385,7 @@ export function createApplication() {
       next(new Error('Authentication required'));
     }
   });
+
   io.on('connection', async (socket) => {
     const { user, expiresAt } = socket.data.session;
     // Revocation covers pending verification; this room receives no board data.
@@ -377,7 +403,12 @@ export function createApplication() {
     timer.unref();
     socket.on('disconnect', () => clearTimeout(timer));
   });
+
+  // --- Middleware chain (order matters) ---
+
   app.disable('x-powered-by');
+
+  // Security headers
   app.use(
     helmet({
       contentSecurityPolicy: {
@@ -387,6 +418,11 @@ export function createApplication() {
       },
     }),
   );
+
+  // GZIP/Brotli compression for all responses
+  app.use(compression());
+
+  // CORS — locked to CLIENT_ORIGIN
   app.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
     if (!allowedOrigin(req.headers.origin)) {
@@ -396,8 +432,43 @@ export function createApplication() {
     next();
   });
   app.use(cors({ origin: config.CLIENT_ORIGIN, credentials: true }));
+
+  // Body parsing with size limit
   app.use(express.json({ limit: '64kb' }));
+
+  // Cookie parser
   app.use(cookieParser());
+
+  // NoSQL injection sanitization — strips $ and . keys from req.body
+  // (Express 5 compatible: does not mutate the read-only req.query getter)
+  app.use((req, _res, next) => {
+    if (req.body && typeof req.body === 'object') {
+      req.body = sanitize(req.body);
+    }
+    next();
+  });
+
+  // HTTP parameter pollution protection
+  app.use(hpp());
+
+  // Request logging — JSON in production, colored dev format otherwise
+  if (config.NODE_ENV !== 'test') {
+    app.use(morgan(config.NODE_ENV === 'production' ? 'combined' : 'dev'));
+  }
+
+  // General API rate limiter — 200 requests per 15 minutes
+  app.use(
+    '/api',
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: 200,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      message: { error: 'Too many requests. Please try again later.' },
+    }),
+  );
+
+  // CSRF + content-type enforcement for mutating requests
   app.use('/api', (req, _res, next) => {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
       if (req.get('X-Flowboard-Request') !== '1') {
@@ -411,12 +482,20 @@ export function createApplication() {
     }
     next();
   });
+
+  // API routes
   app.use('/api', apiRoutes(io));
   app.use('/api', (_req, _res, next) => next(new AppError(404, 'Endpoint not found')));
+
+  // Serve client build in production
   if (config.serveClient)
     mountClient(app, fileURLToPath(new URL('../../client/dist', import.meta.url)));
+
   app.use((_req, _res, next) => next(new AppError(404, 'Endpoint not found')));
+
+  // Global error handler — MUST be last
   app.use(errorHandler);
+
   return { app, server, io };
 }
 ```
@@ -427,6 +506,19 @@ export function createApplication() {
 import { config } from './config/env.js';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
 import { createApplication } from './app.js';
+import { logger } from './utils/logger.js';
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception — shutting down', { name: error.name, message: error.message });
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  logger.error('Unhandled promise rejection — shutting down', { message });
+  process.exit(1);
+});
+
 try {
   await connectDatabase();
   const { server, io } = createApplication();
@@ -434,23 +526,31 @@ try {
     server.once('error', reject);
     server.listen(config.PORT, config.HOST, resolve);
   });
-  console.log(`Flowboard API: http://localhost:${config.PORT}`);
+  logger.info(`Flowboard API running`, {
+    url: `http://localhost:${config.PORT}`,
+    env: config.NODE_ENV,
+  });
+
   let stopping = false;
   const shutdown = () => {
     if (stopping) return;
     stopping = true;
+    logger.info('Graceful shutdown initiated');
     const deadline = setTimeout(() => process.exit(1), 10000);
     deadline.unref();
     io.close(async () => {
       await disconnectDatabase();
+      logger.info('Shutdown complete');
       process.exit(0);
     });
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 } catch (error) {
-  const name = error instanceof Error ? error.name : 'Error';
-  console.error(`Startup failed (${name}). Check MongoDB, environment variables and the port.`);
+  const message = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? error.stack : '';
+  logger.error(`Startup failed: ${message}`);
+  if (stack) logger.error(stack);
   await disconnectDatabase();
   process.exitCode = 1;
 }
@@ -464,20 +564,35 @@ import mongoose from 'mongoose';
 import { AppError } from '../errors/AppError.js';
 import { authRoutes } from '../modules/auth/auth.routes.js';
 import { boardRoutes } from '../modules/boards/boards.routes.js';
+
+const startTime = Date.now();
+
 export function apiRoutes(io) {
   const router = Router();
+
+  // Liveness probe — always returns 200 if the process is running
   router.get('/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    res.json({
+      success: true,
+      status: 'ok',
+      uptime: Math.floor((Date.now() - startTime) / 1000),
+      timestamp: new Date().toISOString(),
+      dbStatus: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    });
   });
+
+  // Readiness probe — checks database connectivity
   router.get('/ready', async (_req, res) => {
     try {
       if (mongoose.connection.readyState !== 1) throw new Error('Disconnected');
       await mongoose.connection.db.command({ ping: 1 }, { timeoutMS: 1500 });
-      res.json({ status: 'ready' });
+      res.json({ success: true, status: 'ready' });
     } catch {
-      res.status(503).json({ status: 'unavailable' });
+      res.status(503).json({ success: false, status: 'unavailable' });
     }
   });
+
+  // Database guard — rejects requests when DB is disconnected
   router.use((_req, _res, next) => {
     next(
       mongoose.connection.readyState === 1
@@ -485,6 +600,7 @@ export function apiRoutes(io) {
         : new AppError(503, 'Database temporarily unavailable. Please retry shortly.'),
     );
   });
+
   router.use('/auth', authRoutes(io));
   router.use('/boards', boardRoutes(io));
   return router;
@@ -506,6 +622,9 @@ export class AppError extends Error {
 ### File: `server/src/middleware/error.middleware.js`
 
 ```javascript
+import { logger } from '../utils/logger.js';
+import { config } from '../config/env.js';
+
 export const errorHandler = (error, _req, res, next) => {
   if (res.headersSent) {
     next(error);
@@ -546,13 +665,20 @@ export const errorHandler = (error, _req, res, next) => {
     status = 503;
   }
   if (status >= 500) {
-    console.error('Request failed:', error.name);
+    logger.error('Request failed', {
+      name: error.name,
+      message: error.message,
+      ...(config.NODE_ENV !== 'production' ? { stack: error.stack } : {}),
+    });
     message =
       status === 503
         ? 'Database temporarily unavailable. Please retry shortly.'
         : 'The server could not complete your request';
   }
-  res.status(status).json({ error: message });
+  res.status(status).json({
+    success: false,
+    error: message,
+  });
 };
 ```
 
@@ -651,6 +777,7 @@ Each mutation checks the client's board version. Mongoose optimistic concurrency
 
 ```javascript
 import mongoose from 'mongoose';
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 80 },
@@ -666,8 +793,30 @@ const userSchema = new mongoose.Schema(
     passwordHash: { type: String, required: true, select: false },
     tokenVersion: { type: Number, default: 0, min: 0, select: false },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+    toJSON: {
+      transform(_doc, ret) {
+        ret.id = ret._id;
+        delete ret._id;
+        delete ret.__v;
+        delete ret.passwordHash;
+        delete ret.tokenVersion;
+        delete ret.createdAt;
+        delete ret.updatedAt;
+        return ret;
+      },
+    },
+  },
 );
+
+/** Find a user by their email address (case-insensitive, trimmed) */
+userSchema.statics.findByEmail = function (email) {
+  return this.findOne({ email: email.toLowerCase().trim() });
+};
+
+userSchema.index({ createdAt: -1 });
+
 export const User = mongoose.model('User', userSchema);
 ```
 
@@ -984,8 +1133,14 @@ Vite proxies both `/api` and `/socket.io` to Express. Run the browser at `http:/
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#182a36" />
+    <meta
+      name="description"
+      content="Flowboard — A Kanban board to organize your tasks, track progress, and keep your work moving. Create boards, columns, and cards with drag-and-drop simplicity."
+    />
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
-    <title>Flowboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <title>Flowboard — Organize your work</title>
   </head>
   <body>
     <div id="root"></div>
@@ -1053,17 +1208,45 @@ createRoot(root).render(
 import { Component } from 'react';
 
 export class ErrorBoundary extends Component {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
   }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
   render() {
-    if (this.state.failed)
+    if (this.state.hasError)
       return (
-        <main className="page" role="alert">
-          <h1>Something went wrong</h1>
-          <p>Your saved work is still on the server. Reload to try again.</p>
-          <button onClick={() => window.location.reload()}>Reload Flowboard</button>
+        <main className="page">
+          <div
+            className="empty-state"
+            role="alert"
+            style={{ paddingTop: 'clamp(48px, 12vw, 120px)' }}
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+              style={{ width: '100px', height: '100px' }}
+            >
+              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+              <line x1="12" y1="9" x2="12" y2="13" />
+              <line x1="12" y1="17" x2="12.01" y2="17" />
+            </svg>
+            <h1 style={{ fontSize: 'var(--text-3xl)' }}>Something went wrong</h1>
+            <p>An unexpected error occurred. Your data is safe.</p>
+            <button className="btn btn-primary" onClick={() => window.location.reload()}>
+              Reload page
+            </button>
+          </div>
         </main>
       );
     return this.props.children;
@@ -1075,12 +1258,36 @@ export class ErrorBoundary extends Component {
 
 ```jsx
 import { Link } from 'react-router-dom';
+
 export function NotFoundPage() {
   return (
     <main className="page">
-      <h1>Page not found</h1>
-      <p>Check the address or return to your boards.</p>
-      <Link to="/boards">Go to boards</Link>
+      <div className="empty-state" style={{ paddingTop: 'clamp(48px, 12vw, 120px)' }}>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          style={{ width: '100px', height: '100px' }}
+        >
+          <path d="M9 9h.01" />
+          <path d="M15 9h.01" />
+          <path d="M8 13a4 4 0 0 0 8 0" transform="rotate(180 12 13)" />
+          <circle cx="12" cy="12" r="10" />
+        </svg>
+        <h1 style={{ fontSize: 'var(--text-4xl)', marginBottom: 'var(--space-3)' }}>
+          <span className="gradient-text">404</span>
+        </h1>
+        <h3>Page not found</h3>
+        <p>Check the address or return to your boards.</p>
+        <Link to="/boards" className="btn btn-primary">
+          Go to boards
+        </Link>
+      </div>
     </main>
   );
 }
@@ -1114,9 +1321,14 @@ export default function App() {
 
 ```jsx
 import { AuthProvider } from '@/features/auth/hooks/AuthContext';
+import { ThemeProvider } from '@/hooks/useTheme';
 // BoardProvider is scoped to the signed-in user in ProtectedRoute so sign-out clears board state.
 export function AppProviders({ children }) {
-  return <AuthProvider>{children}</AuthProvider>;
+  return (
+    <ThemeProvider>
+      <AuthProvider>{children}</AuthProvider>
+    </ThemeProvider>
+  );
 }
 ```
 
@@ -1206,7 +1418,10 @@ export function TitleForm({ label, initial = '', busy, maxLength = 120, onSubmit
         value={title}
         onChange={(event) => setTitle(event.target.value)}
       />
-      <button disabled={busy || saving}>{label}</button>
+      <button className="btn btn-primary" disabled={busy || saving}>
+        {saving && <span className="spinner spinner-sm" aria-hidden="true" />}
+        {saving ? 'Creating…' : label}
+      </button>
       {error && <p role="alert">{error}</p>}
     </form>
   );
@@ -1220,12 +1435,16 @@ import { useState } from 'react';
 import { Link, Outlet } from 'react-router-dom';
 import { useAuth } from '@/features/auth/hooks/AuthContext';
 import { useBoards } from '@/features/boards/hooks/BoardContext';
+import { useTheme } from '@/hooks/useTheme';
 import { errorMessage } from '@/utils/errors';
+
 export function Shell() {
   const { user, signOut } = useAuth();
   const { error, clearError, live, loadList, loadBoard } = useBoards();
+  const { theme, toggleTheme } = useTheme();
   const [logoutError, setLogoutError] = useState('');
   const [signingOut, setSigningOut] = useState(false);
+
   return (
     <>
       <a className="skip-link" href="#main-content">
@@ -1236,9 +1455,21 @@ export function Shell() {
           Flowboard<span> / </span>
         </Link>
         <div className="actions">
-          <small>{live ? 'Live sync on' : 'Sync reconnecting'}</small>
+          <span className="live-indicator" aria-live="polite">
+            <span className={`live-dot${live ? '' : ' offline'}`} aria-hidden="true" />
+            {live ? 'Live' : 'Reconnecting'}
+          </span>
+          <button
+            className="theme-toggle"
+            onClick={toggleTheme}
+            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          >
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
           <span>{user?.name}</span>
           <button
+            className="btn btn-ghost btn-sm"
             disabled={signingOut}
             onClick={async () => {
               if (signingOut) return;
@@ -1253,14 +1484,15 @@ export function Shell() {
               }
             }}
           >
-            {signingOut ? 'Signing out…' : 'Sign out everywhere'}
+            {signingOut ? 'Signing out…' : 'Sign out'}
           </button>
         </div>
       </header>
       {(error || logoutError) && (
         <div className="error-banner" role="alert">
-          {error || logoutError}{' '}
+          <span>{error || logoutError}</span>
           <button
+            className="btn btn-secondary btn-sm"
             onClick={() => {
               clearError();
               setLogoutError('');
@@ -1284,16 +1516,21 @@ export function Shell() {
 import { useRef, useState } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/features/auth/hooks/AuthContext';
+import { useTheme } from '@/hooks/useTheme';
 import { errorMessage } from '@/utils/errors';
+
 export function AuthPage({ mode }) {
   const { user, signIn, registerAccount } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const pending = useRef(false);
   const register = mode === 'register';
+
   if (user) return <Navigate to="/boards" replace />;
+
   return (
     <main className="auth-page">
       <div className="auth-intro">
@@ -1304,81 +1541,98 @@ export function AuthPage({ mode }) {
         </h1>
         <p>Turn a collection of tasks into a clear path forward.</p>
       </div>
-      <form
-        className="auth-form"
-        onSubmit={async (event) => {
-          event.preventDefault();
-          if (pending.current) return;
-          pending.current = true;
-          setError('');
-          setBusy(true);
-          const data = new FormData(event.currentTarget);
-          const input = {
-            email: String(data.get('email') ?? ''),
-            password: String(data.get('password') ?? ''),
-            ...(register ? { name: String(data.get('name') ?? '') } : {}),
-          };
-          try {
-            if (register) {
-              await registerAccount(input);
-              navigate('/login', { replace: true, state: { registered: true } });
-            } else {
-              await signIn(input);
-            }
-          } catch (err) {
-            setError(errorMessage(err));
-          } finally {
-            pending.current = false;
-            setBusy(false);
-          }
-        }}
-      >
-        <h2>{register ? 'Create your account' : 'Welcome back'}</h2>
-        {!register && location.state?.registered && (
-          <p role="status">Account created successfully. Please sign in.</p>
-        )}
-        {register && (
-          <label>
-            Name
-            <input disabled={busy} name="name" required maxLength={80} autoComplete="name" />
-          </label>
-        )}
-        <label>
-          Email
-          <input
-            disabled={busy}
-            name="email"
-            type="email"
-            required
-            maxLength={254}
-            autoComplete="email"
-          />
-        </label>
-        <label>
-          Password
-          <input
-            disabled={busy}
-            name="password"
-            type="password"
-            required
-            minLength={8}
-            maxLength={72}
-            autoComplete={register ? 'new-password' : 'current-password'}
-          />
-        </label>
-        {register && <small>At least 8 characters; at most 72 UTF-8 bytes.</small>}
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-        <button disabled={busy}>
-          {busy ? 'Please wait…' : register ? 'Create account' : 'Sign in'}
+      <div style={{ position: 'relative' }}>
+        <button
+          className="theme-toggle"
+          onClick={toggleTheme}
+          aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          style={{ position: 'absolute', top: '16px', right: '16px' }}
+        >
+          {theme === 'dark' ? '☀️' : '🌙'}
         </button>
-        <Link to={register ? '/login' : '/register'}>
-          {register ? 'Already registered? Sign in' : 'Create an account'}
-        </Link>
-      </form>
+        <form
+          className="auth-form"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (pending.current) return;
+            pending.current = true;
+            setError('');
+            setBusy(true);
+            const data = new FormData(event.currentTarget);
+            const input = {
+              email: String(data.get('email') ?? ''),
+              password: String(data.get('password') ?? ''),
+              ...(register ? { name: String(data.get('name') ?? '') } : {}),
+            };
+            try {
+              if (register) {
+                await registerAccount(input);
+                navigate('/login', { replace: true, state: { registered: true } });
+              } else {
+                await signIn(input);
+              }
+            } catch (err) {
+              setError(errorMessage(err));
+            } finally {
+              pending.current = false;
+              setBusy(false);
+            }
+          }}
+        >
+          <h2>{register ? 'Create your account' : 'Welcome back'}</h2>
+          {!register && location.state?.registered && (
+            <p role="status" style={{ color: 'var(--color-success)', fontSize: 'var(--text-sm)' }}>
+              ✓ Account created successfully. Please sign in.
+            </p>
+          )}
+          {register && (
+            <label>
+              Name
+              <input disabled={busy} name="name" required maxLength={80} autoComplete="name" />
+            </label>
+          )}
+          <label>
+            Email
+            <input
+              disabled={busy}
+              name="email"
+              type="email"
+              required
+              maxLength={254}
+              autoComplete="email"
+            />
+          </label>
+          <label>
+            Password
+            <input
+              disabled={busy}
+              name="password"
+              type="password"
+              required
+              minLength={8}
+              maxLength={72}
+              autoComplete={register ? 'new-password' : 'current-password'}
+            />
+          </label>
+          {register && (
+            <small style={{ color: 'var(--color-text-muted)' }}>
+              At least 8 characters; at most 72 UTF-8 bytes.
+            </small>
+          )}
+          {error && (
+            <div className="error" role="alert">
+              {error}
+            </div>
+          )}
+          <button className="btn btn-primary btn-lg" disabled={busy}>
+            {busy && <span className="spinner spinner-sm" aria-hidden="true" />}
+            {busy ? 'Please wait…' : register ? 'Create account' : 'Sign in'}
+          </button>
+          <Link to={register ? '/login' : '/register'}>
+            {register ? 'Already registered? Sign in' : 'Create an account'}
+          </Link>
+        </form>
+      </div>
     </main>
   );
 }
@@ -1392,48 +1646,90 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { boardsApi as api } from '@/features/boards/boards.api';
 import { useBoards } from '@/features/boards/hooks/BoardContext';
 import { Kanban } from '@/features/boards/components/Kanban';
+
 export function BoardPage() {
   const { boardId } = useParams();
   const navigate = useNavigate();
   const { board, loadingBoard, busy, run, selectBoard } = useBoards();
+
   useEffect(() => {
     selectBoard(boardId ?? null);
     return () => selectBoard(null);
   }, [boardId, selectBoard]);
+
   if (loadingBoard)
     return (
-      <main id="main-content" tabIndex={-1} className="page" role="status">
-        Loading board…
+      <main id="main-content" tabIndex={-1} className="board-page" role="status">
+        <div className="skeleton skeleton-title" style={{ width: '120px' }} />
+        <div style={{ marginTop: '24px' }}>
+          <div className="skeleton skeleton-title" />
+          <div className="skeleton skeleton-text" style={{ width: '40%', marginTop: '8px' }} />
+        </div>
+        <div style={{ display: 'flex', gap: '20px', marginTop: '32px' }}>
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="skeleton"
+              style={{ width: '320px', height: '300px', borderRadius: '14px' }}
+            />
+          ))}
+        </div>
       </main>
     );
+
   if (!board || board._id !== boardId)
     return (
       <main id="main-content" tabIndex={-1} className="page">
-        <h1>Board unavailable</h1>
-        <p>The board could not be opened. It may have been deleted or belong to another account.</p>
-        <Link to="/boards">Back to boards</Link>
+        <div className="empty-state">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <line x1="15" y1="9" x2="9" y2="15" />
+            <line x1="9" y1="9" x2="15" y2="15" />
+          </svg>
+          <h3>Board unavailable</h3>
+          <p>
+            The board could not be opened. It may have been deleted or belong to another account.
+          </p>
+          <Link to="/boards" className="btn btn-primary">
+            Back to boards
+          </Link>
+        </div>
       </main>
     );
+
   return (
     <main id="main-content" tabIndex={-1} className="board-page">
-      <Link to="/boards">← All boards</Link>
+      <Link to="/boards" className="back-link">
+        ← All boards
+      </Link>
       <div className="board-heading">
         <div>
           <p className="eyebrow">KEEP THINGS MOVING</p>
           <h1>{board.title}</h1>
-          {board.description && <p>{board.description}</p>}
+          {board.description && <p className="muted">{board.description}</p>}
         </div>
         <div className="actions">
           <button
+            className="btn btn-secondary btn-sm"
             disabled={busy}
             onClick={() => {
               const title = window.prompt('Board name', board.title);
               if (title?.trim()) void run(() => api.updateBoard(board._id, { title }, board.__v));
             }}
           >
-            Rename board
+            ✏️ Rename
           </button>
           <button
+            className="btn btn-secondary btn-sm"
             disabled={busy}
             onClick={() => {
               const description = window.prompt('Board description', board.description);
@@ -1441,9 +1737,10 @@ export function BoardPage() {
                 void run(() => api.updateBoard(board._id, { description }, board.__v));
             }}
           >
-            Edit description
+            📝 Description
           </button>
           <button
+            className="btn btn-danger btn-sm"
             disabled={busy}
             onClick={async () => {
               if (!window.confirm('Delete this board and every column and card in it?')) return;
@@ -1455,15 +1752,30 @@ export function BoardPage() {
               if (result) navigate('/boards');
             }}
           >
-            Delete board
+            🗑️ Delete
           </button>
         </div>
       </div>
-      <p className="muted">
-        Drag a card by its handle, or use its Move to menu. Keyboard: Space to lift, arrows to move,
+      <p className="muted" style={{ fontSize: 'var(--text-sm)', marginTop: 'var(--space-3)' }}>
+        Drag a card by its handle, or use the Move to menu. Keyboard: Space to lift, arrows to move,
         Space to drop.
       </p>
-      {busy && <p role="status">Saving changes…</p>}
+      {busy && (
+        <p
+          role="status"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            marginTop: '12px',
+            fontSize: 'var(--text-sm)',
+            color: 'var(--color-primary-500)',
+          }}
+        >
+          <span className="spinner spinner-sm" aria-hidden="true" />
+          Saving changes…
+        </p>
+      )}
       <Kanban key={board._id} board={board} />
     </main>
   );
@@ -1477,14 +1789,19 @@ import { Link, useNavigate } from 'react-router-dom';
 import { boardsApi as api } from '@/features/boards/boards.api';
 import { useBoards } from '@/features/boards/hooks/BoardContext';
 import { TitleForm } from '@/components/common/TitleForm';
+
 export function BoardsPage() {
   const { boards, page, pages, changePage, loadingList, busy, run } = useBoards();
   const navigate = useNavigate();
+
   return (
     <main id="main-content" tabIndex={-1} className="page">
       <p className="eyebrow">YOUR WORKSPACE</p>
-      <h1>Make room for your next idea.</h1>
+      <h1>
+        Make room for your <span className="gradient-text">next idea.</span>
+      </h1>
       <p className="muted">Create a board, break things down, and keep moving.</p>
+
       <TitleForm
         label="Create board"
         busy={busy}
@@ -1494,31 +1811,65 @@ export function BoardsPage() {
           return result;
         }}
       />
+
       {loadingList ? (
-        <p role="status">Loading boards…</p>
+        <div className="board-grid">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="skeleton skeleton-card" />
+          ))}
+        </div>
       ) : (
         <div className="board-grid">
           {boards.map((board) => (
             <Link className="board-tile" key={board._id} to={`/boards/${board._id}`}>
               <small>BOARD</small>
               <h2>{board.title}</h2>
-              <p>{board.description || 'Open your board'}</p>
-              <span>Open board →</span>
+              <p>{board.description || 'Open your board to get started'}</p>
+              <span className="board-tile-cta">Open board →</span>
             </Link>
           ))}
-          {boards.length === 0 && <p>Your first board starts here. Give it a name above.</p>}
+          {boards.length === 0 && (
+            <div className="empty-state" style={{ gridColumn: '1 / -1' }}>
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <rect x="3" y="3" width="7" height="7" rx="1" />
+                <rect x="14" y="3" width="7" height="7" rx="1" />
+                <rect x="3" y="14" width="7" height="7" rx="1" />
+                <rect x="14" y="14" width="7" height="7" rx="1" />
+              </svg>
+              <h3>No boards yet</h3>
+              <p>Your first board starts here. Give it a name above.</p>
+            </div>
+          )}
         </div>
       )}
+
       {pages > 1 && (
         <nav className="pagination" aria-label="Board pages">
-          <button disabled={loadingList || page <= 1} onClick={() => changePage(page - 1)}>
-            Previous
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={loadingList || page <= 1}
+            onClick={() => changePage(page - 1)}
+          >
+            ← Previous
           </button>
           <span aria-live="polite">
             Page {page} of {pages}
           </span>
-          <button disabled={loadingList || page >= pages} onClick={() => changePage(page + 1)}>
-            Next
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={loadingList || page >= pages}
+            onClick={() => changePage(page + 1)}
+          >
+            Next →
           </button>
         </nav>
       )}
@@ -1530,24 +1881,58 @@ export function BoardsPage() {
 ### File: `client/src/styles/global.css`
 
 ```css
-:root {
-  font-family: system-ui, sans-serif;
-  color: #182a36;
-  background: #f5f6f4;
-  font-synthesis: none;
-}
-* {
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap');
+@import './variables.css';
+@import './animations.css';
+
+/* =========================================
+   Global Reset & Base
+   ========================================= */
+*,
+*::before,
+*::after {
   box-sizing: border-box;
-}
-body {
   margin: 0;
+  padding: 0;
 }
+
+html {
+  color-scheme: light;
+  scroll-behavior: smooth;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 button,
 input,
 textarea,
 select {
   font: inherit;
+  color: inherit;
 }
+
+/* =========================================
+   Focus & Accessibility
+   ========================================= */
+:focus-visible {
+  outline: 3px solid var(--color-primary-500);
+  outline-offset: 3px;
+  border-radius: var(--radius-xs);
+}
+
 button,
 a,
 input,
@@ -1555,148 +1940,1139 @@ textarea,
 select {
   outline-offset: 4px;
 }
-button {
-  cursor: pointer;
-  border: 1px solid #b9c7c4;
-  background: #fff;
-  color: #183c35;
-  border-radius: 7px;
-  padding: 8px 12px;
+
+.skip-link {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+  transform: translateY(-200%);
+  background: var(--color-surface);
+  color: var(--color-primary-600);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  font-weight: var(--weight-semibold);
+  z-index: var(--z-modal);
+  box-shadow: var(--shadow-lg);
+  text-decoration: none;
+  transition: transform var(--duration-fast) var(--ease-out);
 }
-button:hover {
-  background: #e2eee8;
+
+.skip-link:focus {
+  transform: translateY(0);
 }
-button:disabled {
-  opacity: 0.55;
-  cursor: wait;
+
+/* =========================================
+   Typography
+   ========================================= */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-heading);
+  line-height: var(--leading-tight);
+  letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
 }
+
+h1 {
+  font-size: var(--text-4xl);
+  font-weight: var(--weight-extrabold);
+  line-height: 1.1;
+  margin-bottom: var(--space-4);
+}
+
+h2 {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-bold);
+}
+
+h3 {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+}
+
+p {
+  overflow-wrap: anywhere;
+}
+
 a {
-  color: #245c4e;
+  color: var(--color-primary-600);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  transition: color var(--duration-fast) var(--ease-out);
 }
+
+a:hover {
+  color: var(--color-primary-500);
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, var(--color-primary-500), var(--color-accent-500));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* =========================================
+   Buttons
+   ========================================= */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-family: var(--font-body);
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  white-space: nowrap;
+  user-select: none;
+  transition:
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Primary button — gradient with shine */
+.btn-primary {
+  background: linear-gradient(135deg, var(--color-primary-600), var(--color-primary-500));
+  color: var(--color-text-inverse);
+  border-color: transparent;
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 0 var(--color-primary-500);
+}
+
+.btn-primary::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 60%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, hsl(0 0% 100% / 0.15), transparent);
+  transition: left 0.5s ease;
+}
+
+.btn-primary:hover:not(:disabled) {
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 3px hsl(162 55% 35% / 0.15);
+}
+
+.btn-primary:hover:not(:disabled)::after {
+  left: 200%;
+}
+
+/* Secondary button */
+.btn-secondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: var(--color-bg);
+  border-color: var(--color-border-hover);
+}
+
+/* Ghost button */
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border-color: transparent;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* Danger button */
+.btn-danger {
+  background: var(--color-danger-500);
+  color: var(--color-text-inverse);
+  border-color: transparent;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--color-danger-600);
+}
+
+/* Size variants */
+.btn-sm {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+  border-radius: var(--radius-sm);
+}
+
+.btn-lg {
+  padding: var(--space-3) var(--space-6);
+  font-size: var(--text-base);
+  border-radius: var(--radius-lg);
+}
+
+/* Icon-only button */
+.btn-icon {
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  aspect-ratio: 1;
+  min-width: 36px;
+  min-height: 36px;
+}
+
+/* =========================================
+   Form Controls
+   ========================================= */
 input,
 textarea,
 select {
   width: 100%;
   min-width: 0;
-  border: 1px solid #bdc9c5;
-  border-radius: 6px;
-  background: #fff;
-  padding: 9px;
-  color: #182a36;
+  background: var(--color-surface);
+  border: 1.5px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  color: var(--color-text);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
 }
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--color-primary-500);
+  box-shadow: 0 0 0 3px hsl(162 55% 35% / 0.1);
+  outline: none;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-text-muted);
+}
+
 textarea {
-  min-height: 90px;
+  min-height: 100px;
   resize: vertical;
 }
+
 label {
   display: grid;
-  gap: 6px;
-  font-size: 13px;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-secondary);
 }
-h1,
-h2,
-h3,
-p {
-  overflow-wrap: anywhere;
+
+/* =========================================
+   Cards
+   ========================================= */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  box-shadow: var(--shadow-xs);
+  transition:
+    box-shadow var(--duration-normal) var(--ease-out),
+    transform var(--duration-normal) var(--ease-out),
+    border-color var(--duration-normal) var(--ease-out);
 }
-h1 {
-  font-size: clamp(28px, 4vw, 44px);
-  line-height: 1.15;
-  letter-spacing: -0.04em;
-  margin: 10px 0 16px;
+
+.card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+  border-color: var(--color-border-hover);
 }
-h2 {
-  font-size: 19px;
+
+/* =========================================
+   Badges
+   ========================================= */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  white-space: nowrap;
+  line-height: 1.4;
 }
-h3 {
-  font-size: 16px;
+
+.badge-low {
+  background: hsl(210 40% 92%);
+  color: var(--color-priority-low);
 }
+
+.badge-medium {
+  background: hsl(38 85% 92%);
+  color: hsl(30 70% 38%);
+}
+
+.badge-high {
+  background: hsl(15 80% 92%);
+  color: var(--color-priority-high);
+}
+
+.badge-urgent {
+  background: hsl(0 70% 92%);
+  color: var(--color-priority-urgent);
+}
+
+.badge-label {
+  background: var(--color-primary-100);
+  color: var(--color-primary-700);
+}
+
+[data-theme='dark'] .badge-low {
+  background: hsl(210 30% 18%);
+}
+
+[data-theme='dark'] .badge-medium {
+  background: hsl(38 40% 18%);
+}
+
+[data-theme='dark'] .badge-high {
+  background: hsl(15 40% 18%);
+}
+
+[data-theme='dark'] .badge-urgent {
+  background: hsl(0 40% 18%);
+}
+
+[data-theme='dark'] .badge-label {
+  background: hsl(162 30% 16%);
+  color: var(--color-primary-300);
+}
+
+/* =========================================
+   Skeleton Loader
+   ========================================= */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-border) 25%,
+    hsl(0 0% 0% / 0.04) 50%,
+    var(--color-border) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite ease-in-out;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-text {
+  height: 14px;
+  width: 70%;
+  margin-bottom: var(--space-2);
+}
+
+.skeleton-title {
+  height: 22px;
+  width: 55%;
+  margin-bottom: var(--space-3);
+}
+
+.skeleton-card {
+  height: 120px;
+  border-radius: var(--radius-lg);
+}
+
+/* =========================================
+   Spinner
+   ========================================= */
+.spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2.5px solid var(--color-border);
+  border-top-color: var(--color-primary-500);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.spinner-sm {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+
+.spinner-lg {
+  width: 32px;
+  height: 32px;
+  border-width: 3px;
+}
+
+/* =========================================
+   Toast Notifications
+   ========================================= */
+.toast-container {
+  position: fixed;
+  bottom: var(--space-6);
+  right: var(--space-6);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4) var(--space-5);
+  box-shadow: var(--shadow-lg);
+  min-width: 300px;
+  max-width: 420px;
+  animation: slideInRight var(--duration-normal) var(--ease-out);
+  position: relative;
+  overflow: hidden;
+}
+
+.toast-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--color-primary-500);
+  transform-origin: left;
+  animation: progressShrink 4s linear forwards;
+}
+
+.toast-error .toast-progress {
+  background: var(--color-danger-500);
+}
+
+.toast-success .toast-progress {
+  background: var(--color-success);
+}
+
+.toast-message {
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+}
+
+.toast-close {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-sm);
+}
+
+.toast-close:hover {
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+/* =========================================
+   Modal / Dialog
+   ========================================= */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: hsl(0 0% 0% / 0.5);
+  backdrop-filter: blur(8px);
+  z-index: var(--z-modal);
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  animation: fadeIn var(--duration-fast) var(--ease-out);
+}
+
+.modal {
+  background: var(--color-surface);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow-y: auto;
+  animation: scaleIn var(--duration-normal) var(--ease-spring);
+}
+
+.modal-header {
+  padding: var(--space-6) var(--space-6) 0;
+}
+
+.modal-header h2 {
+  font-size: var(--text-xl);
+  margin-bottom: var(--space-1);
+}
+
+.modal-body {
+  padding: var(--space-5) var(--space-6);
+}
+
+.modal-footer {
+  padding: 0 var(--space-6) var(--space-6);
+  display: flex;
+  gap: var(--space-3);
+  justify-content: flex-end;
+}
+
+/* =========================================
+   Topbar / Navigation
+   ========================================= */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 20px 4vw;
-  background: #fff;
-  border-bottom: 1px solid #dce2df;
+  gap: var(--space-5);
+  padding: var(--space-4) clamp(var(--space-4), 4vw, var(--space-8));
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  backdrop-filter: blur(12px);
+  background: var(--color-surface-overlay);
 }
+
 .brand {
-  font-size: 25px;
-  letter-spacing: -0.07em;
-  font-weight: 700;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  letter-spacing: -0.06em;
+  font-weight: var(--weight-extrabold);
   text-decoration: none;
-  color: #182a36;
-}
-.brand span {
-  color: #527c6c;
-}
-.actions {
+  color: var(--color-text);
   display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.brand span {
+  color: var(--color-primary-500);
+}
+
+.topbar .actions {
+  display: flex;
+  gap: var(--space-3);
   align-items: center;
 }
-.actions button {
-  font-size: 12px;
-}
-.page {
-  max-width: 1240px;
-  margin: auto;
-  padding: 60px 4vw;
-}
-.eyebrow {
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  font-weight: 700;
-  color: #58796f;
-}
-.muted {
-  color: #65746e;
-  line-height: 1.6;
-}
-.inline-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  max-width: 530px;
-  margin: 25px 0;
-}
-.inline-form input {
-  flex: 1;
-  width: auto;
-}
-.inline-form p {
-  flex-basis: 100%;
-  margin: 0;
-}
-.actions > span {
+
+.topbar .actions span {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-secondary);
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-success);
+  animation: pulse 2s infinite;
+}
+
+.live-dot.offline {
+  background: var(--color-warning);
+}
+
+.theme-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: var(--space-2);
+  color: var(--color-text-muted);
+  border-radius: var(--radius-md);
+  font-size: var(--text-lg);
+  transition:
+    color var(--duration-fast),
+    background var(--duration-fast);
+  min-width: 36px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.theme-toggle:hover {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* =========================================
+   Page Layout
+   ========================================= */
+.page {
+  max-width: 1280px;
+  margin: auto;
+  padding: clamp(var(--space-8), 6vw, var(--space-16)) clamp(var(--space-4), 4vw, var(--space-8));
+  animation: fadeUp var(--duration-slow) var(--ease-out);
+}
+
+.eyebrow {
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  letter-spacing: 0.14em;
+  font-weight: var(--weight-semibold);
+  color: var(--color-primary-500);
+  text-transform: uppercase;
+}
+
+.muted {
+  color: var(--color-text-muted);
+  line-height: var(--leading-relaxed);
+}
+
+/* =========================================
+   Error Banner
+   ========================================= */
+.error,
+.error-banner {
+  background: var(--color-danger-50);
+  color: var(--color-danger-text);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-danger-100);
+  line-height: var(--leading-snug);
+  font-size: var(--text-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  animation: fadeDown var(--duration-normal) var(--ease-out);
+}
+
+.error-banner {
+  margin: var(--space-4) clamp(var(--space-4), 4vw, var(--space-8)) 0;
+}
+
+.error-banner .btn {
+  flex-shrink: 0;
+}
+
+/* =========================================
+   Inline Form
+   ========================================= */
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  max-width: 560px;
+  margin: var(--space-6) 0;
+}
+
+.inline-form input {
+  flex: 1;
+  width: auto;
+  min-width: 200px;
+}
+
+.inline-form p {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-danger-text);
+}
+
+.inline-form .btn-primary {
+  white-space: nowrap;
+}
+
+/* =========================================
+   Board Grid (Dashboard)
+   ========================================= */
+.board-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-5);
+  margin-top: var(--space-10);
+}
+
+.board-tile {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  padding: var(--space-6);
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  box-shadow: var(--shadow-xs);
+  transition:
+    box-shadow var(--duration-normal) var(--ease-out),
+    transform var(--duration-normal) var(--ease-out),
+    border-color var(--duration-normal) var(--ease-out);
+  animation: fadeUp var(--duration-slow) var(--ease-out) both;
+}
+
+.board-tile:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-4px);
+  border-color: var(--color-primary-400);
+}
+
+.board-tile small {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  letter-spacing: 0.12em;
+  font-weight: var(--weight-semibold);
+}
+
+.board-tile h2 {
+  font-size: var(--text-lg);
+  margin: var(--space-1) 0;
+}
+
+.board-tile p {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  flex: 1;
+}
+
+.board-tile .board-tile-cta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-primary-600);
+  transition: gap var(--duration-fast);
+}
+
+.board-tile:hover .board-tile-cta {
+  gap: var(--space-3);
+}
+
+/* Stagger board tiles */
+.board-tile:nth-child(1) {
+  animation-delay: 0ms;
+}
+.board-tile:nth-child(2) {
+  animation-delay: 60ms;
+}
+.board-tile:nth-child(3) {
+  animation-delay: 120ms;
+}
+.board-tile:nth-child(4) {
+  animation-delay: 180ms;
+}
+.board-tile:nth-child(5) {
+  animation-delay: 240ms;
+}
+.board-tile:nth-child(6) {
+  animation-delay: 300ms;
+}
+
+/* =========================================
+   Board Page
+   ========================================= */
+.board-page {
+  padding: var(--space-6) clamp(var(--space-4), 4vw, var(--space-8));
+  animation: fadeUp var(--duration-slow) var(--ease-out);
+}
+
+.board-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-6);
+  margin-top: var(--space-6);
+}
+
 .board-heading > div {
   min-width: 0;
 }
+
+.board-heading h1 {
+  font-size: var(--text-3xl);
+}
+
+.board-heading .actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-muted);
+  text-decoration: none;
+  padding: var(--space-2) 0;
+  transition: color var(--duration-fast);
+}
+
+.back-link:hover {
+  color: var(--color-primary-500);
+}
+
+/* =========================================
+   Kanban Board
+   ========================================= */
+.kanban {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+  overflow-x: auto;
+  padding: var(--space-4) 0 var(--space-10);
+  scroll-behavior: smooth;
+}
+
+.column {
+  flex: 0 0 var(--column-width);
+  min-width: 0;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.column-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+
+.column-header h2 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+  margin: 0;
+}
+
+.column-header h2 span {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-muted);
+  background: var(--color-surface);
+  border-radius: var(--radius-full);
+  padding: 1px var(--space-2);
+  min-width: 22px;
+  text-align: center;
+}
+
+.column-header .actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.card-list {
+  min-height: 60px;
+  padding-top: var(--space-2);
+  border-radius: var(--radius-md);
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.drag-over {
+  background: var(--drag-over-bg);
+  border-radius: var(--radius-md);
+}
+
+/* Task Card */
+.task-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  margin-bottom: var(--space-3);
+  box-shadow: var(--shadow-xs);
+  transition:
+    box-shadow var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.task-card:hover {
+  box-shadow: var(--shadow-sm);
+  border-color: var(--color-border-hover);
+}
+
+.task-card h3 {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  margin: var(--space-2) 0;
+  line-height: var(--leading-snug);
+}
+
+.drag-handle {
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-muted);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: grab;
+  touch-action: none;
+  transition:
+    background var(--duration-fast),
+    color var(--duration-fast);
+}
+
+.drag-handle:hover {
+  background: var(--color-primary-100);
+  color: var(--color-primary-600);
+}
+
+.description {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  line-height: var(--leading-normal);
+}
+
+.metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: var(--space-3) 0;
+}
+
+.task-card .actions {
+  display: flex;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.move-select {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  margin-top: var(--space-3);
+  color: var(--color-text-muted);
+}
+
+.move-select select {
+  width: auto;
+  max-width: 180px;
+  font-size: var(--text-xs);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+}
+
+.column .inline-form {
+  margin: var(--space-2) 0;
+}
+
+.column .inline-form input,
+.column .inline-form button {
+  font-size: var(--text-sm);
+}
+
+.new-column {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--color-border);
+}
+
+.new-column:hover {
+  border-color: var(--color-primary-400);
+}
+
+/* Card Form */
+.card-form {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.card-form .actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-start;
+}
+
+/* Add card button */
+.add-card-button {
+  width: 100%;
+  margin-top: var(--space-3);
+  background: transparent;
+  border: 1.5px dashed var(--color-border);
+  color: var(--color-text-muted);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  cursor: pointer;
+  transition:
+    border-color var(--duration-fast),
+    color var(--duration-fast),
+    background var(--duration-fast);
+}
+
+.add-card-button:hover:not(:disabled) {
+  border-color: var(--color-primary-400);
+  color: var(--color-primary-600);
+  background: var(--color-primary-50);
+}
+
+.card-composer {
+  margin-top: var(--space-3);
+}
+
+/* =========================================
+   Auth Page
+   ========================================= */
+.auth-page {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+}
+
+.auth-intro {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8vw 6vw;
+  background: linear-gradient(135deg, var(--color-primary-700), var(--color-primary-500));
+  color: var(--color-text-inverse);
+  position: relative;
+  overflow: hidden;
+}
+
+.auth-intro::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  right: -30%;
+  width: 80%;
+  height: 200%;
+  background: radial-gradient(circle, hsl(0 0% 100% / 0.06) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.auth-intro .eyebrow {
+  color: hsl(0 0% 100% / 0.7);
+  margin-bottom: var(--space-3);
+}
+
+.auth-intro h1 {
+  font-size: var(--text-5xl);
+  color: white;
+  margin-bottom: var(--space-5);
+  position: relative;
+}
+
+.auth-intro > p:last-child {
+  color: hsl(0 0% 100% / 0.8);
+  line-height: var(--leading-relaxed);
+  max-width: 40ch;
+  font-size: var(--text-lg);
+}
+
+.auth-form {
+  align-self: center;
+  width: min(440px, 90%);
+  margin: var(--space-12) auto;
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-5);
+}
+
+.auth-form h2 {
+  font-size: var(--text-2xl);
+  margin-bottom: var(--space-1);
+}
+
+.auth-form .btn-primary {
+  padding: var(--space-4);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  border-radius: var(--radius-lg);
+}
+
+.auth-form a,
+.auth-form small {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.auth-form a:hover {
+  color: var(--color-primary-500);
+}
+
+/* =========================================
+   Pagination
+   ========================================= */
 .pagination {
   display: flex;
-  gap: 16px;
+  gap: var(--space-4);
   align-items: center;
-  margin-top: 24px;
+  margin-top: var(--space-6);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
 }
-:focus-visible {
-  outline: 3px solid #245c4e;
+
+/* =========================================
+   Empty State
+   ========================================= */
+.empty-state {
+  text-align: center;
+  padding: var(--space-12) var(--space-6);
+  color: var(--color-text-muted);
 }
-.skip-link {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  transform: translateY(-200%);
-  background: white;
-  padding: 12px;
-  z-index: 10;
+
+.empty-state svg {
+  width: 80px;
+  height: 80px;
+  margin-bottom: var(--space-5);
+  opacity: 0.4;
 }
-.skip-link:focus {
-  transform: translateY(0);
+
+.empty-state h3 {
+  color: var(--color-text);
+  margin-bottom: var(--space-2);
 }
+
+.empty-state p {
+  max-width: 36ch;
+  margin: 0 auto var(--space-5);
+  font-size: var(--text-sm);
+}
+
+/* =========================================
+   Touch & Responsive
+   ========================================= */
 @media (pointer: coarse) {
   button,
   select,
@@ -1704,237 +3080,101 @@ h3 {
     min-height: 44px;
   }
 }
-.inline-form button {
-  white-space: nowrap;
-  background: #214f42;
-  color: #fff;
-  border-color: #214f42;
-}
-.board-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: 20px;
-  margin-top: 45px;
-}
-.board-tile {
-  border: 1px solid #d6dfd9;
-  border-radius: 12px;
-  background: #fff;
-  padding: 28px;
-  text-decoration: none;
-  color: inherit;
-}
-.board-tile small {
-  color: #6a7b72;
-  font-size: 10px;
-  letter-spacing: 0.13em;
-}
-.board-tile p {
-  color: #68756e;
-  font-size: 14px;
-}
-.board-tile span {
-  display: block;
-  margin-top: 30px;
-  font-size: 13px;
-  color: #2f6654;
-}
-.board-tile:hover {
-  border-color: #527c6c;
-}
-.board-page {
-  padding: 32px 4vw;
-}
-.board-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 25px;
-  margin-top: 28px;
-}
-.kanban {
-  display: flex;
-  align-items: flex-start;
-  gap: 20px;
-  overflow-x: auto;
-  padding: 14px 0 40px;
-}
-.column {
-  flex: 0 0 310px;
-  min-width: 0;
-  background: #e9eeea;
-  border: 1px solid #dbe2dc;
-  border-radius: 12px;
-  padding: 15px;
-}
-.column-header h2 {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 15px;
-  margin: 5px 0 12px;
-}
-.column-header h2 span {
-  font-size: 12px;
-  color: #6d7b72;
-}
-.column-header button {
-  padding: 5px 8px;
-  font-size: 10px;
-}
-.card-list {
-  min-height: 80px;
-  padding-top: 14px;
-}
-.drag-over {
-  background: #d2e6d8;
-}
-.task-card {
-  border: 1px solid #d6dfd8;
-  background: #fff;
-  border-radius: 8px;
-  padding: 15px;
-  margin-bottom: 12px;
-}
-.task-card h3 {
-  margin: 10px 0;
-}
-.drag-handle {
-  font-size: 10px;
-  padding: 3px 8px;
-  color: #5a7263;
-  touch-action: none;
-}
-.description {
-  font-size: 13px;
-  color: #5e6e63;
-  white-space: pre-wrap;
-}
-.metadata {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin: 12px 0;
-}
-.metadata > * {
-  font-size: 10px;
-  background: #eef2ed;
-  border-radius: 4px;
-  padding: 4px 6px;
-}
-.task-card .actions button {
-  padding: 5px 8px;
-  font-size: 11px;
-}
-.move-select {
-  display: flex;
-  align-items: center;
-  font-size: 10px;
-  margin-top: 14px;
-}
-.move-select select {
-  width: auto;
-  max-width: 200px;
-  font-size: 10px;
-  padding: 5px;
-}
-.column .inline-form {
-  margin-bottom: 2px;
-}
-.column .inline-form input,
-.column .inline-form button {
-  font-size: 12px;
-}
-.new-column {
-  background: transparent;
-  border-style: dashed;
-}
-.card-form {
-  display: grid;
-  gap: 12px;
-  margin-top: 15px;
-}
-.add-card-button {
-  width: 100%;
-  margin-top: 15px;
-  background: #214f42;
-  border-color: #214f42;
-  color: #fff;
-}
-.add-card-button:hover {
-  background: #183c35;
-}
-.card-composer {
-  margin-top: 15px;
-}
-.auth-page {
-  min-height: 100vh;
-  display: grid;
-  grid-template-columns: 1.1fr 1fr;
-}
-.auth-intro {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  padding: 10vw 7vw;
-  background: #dce8df;
-}
-.auth-intro h1 {
-  font-size: clamp(38px, 5vw, 65px);
-}
-.auth-intro > p:last-child {
-  color: #52685b;
-  line-height: 1.7;
-}
-.auth-form {
-  align-self: center;
-  width: min(420px, 90%);
-  margin: 55px auto;
-  display: grid;
-  gap: 22px;
-  padding: 20px;
-}
-.auth-form > button {
-  background: #214f42;
-  color: #fff;
-  padding: 13px;
-}
-.auth-form a,
-.auth-form small {
-  font-size: 12px;
-}
-.error,
-.error-banner {
-  background: #f9e8e4;
-  color: #8e2921;
-  padding: 14px;
-  border-radius: 6px;
-  line-height: 1.5;
-}
-.error-banner {
-  margin: 20px 4vw 0;
-}
-@media (max-width: 760px) {
+
+@media (max-width: 768px) {
   .auth-page {
     grid-template-columns: 1fr;
   }
+
   .auth-intro {
-    padding: 35px 7vw;
+    padding: var(--space-8) clamp(var(--space-4), 6vw, var(--space-8));
   }
+
   .auth-intro h1 {
-    font-size: 35px;
+    font-size: var(--text-3xl);
   }
+
+  .topbar {
+    gap: var(--space-3);
+  }
+
   .topbar,
   .board-heading {
-    align-items: flex-start;
     flex-direction: column;
+    align-items: flex-start;
   }
+
   .page {
-    padding-top: 35px;
+    padding-top: var(--space-8);
   }
+
   .column {
-    flex-basis: 285px;
+    flex-basis: 290px;
   }
+
+  .board-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .topbar .actions span {
+    display: none;
+  }
+
+  .board-heading .actions {
+    width: 100%;
+  }
+
+  .board-heading .actions .btn {
+    flex: 1;
+  }
+
+  .toast-container {
+    right: var(--space-3);
+    left: var(--space-3);
+    bottom: var(--space-3);
+  }
+
+  .toast {
+    min-width: unset;
+  }
+}
+
+@media (hover: none) {
+  .board-tile:hover,
+  .card:hover,
+  .task-card:hover {
+    transform: none;
+    box-shadow: var(--shadow-xs);
+  }
+}
+
+/* =========================================
+   Scrollbar
+   ========================================= */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-hover);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
 }
 ```
 
@@ -2528,7 +3768,7 @@ export function CardComposer({ columnTitle, busy, onSubmit }) {
         aria-label={`Add card to ${columnTitle}`}
         onClick={() => setOpen(true)}
       >
-        Add card
+        + Add card
       </button>
     );
   return (
@@ -2618,10 +3858,10 @@ export function CardForm({
       }}
     >
       {stale && (
-        <p role="status">
+        <div className="error" role="status">
           This board changed while you were editing. Your draft is preserved. Copy any text you
           need, then cancel and reopen the card to review the latest details before saving.
-        </p>
+        </div>
       )}
       <label>
         Card title
@@ -2654,10 +3894,22 @@ export function CardForm({
         Labels, separated by commas
         <input maxLength={340} {...field('labels')} />
       </label>
-      {error && <p role="alert">{error}</p>}
+      {error && (
+        <div className="error" role="alert">
+          {error}
+        </div>
+      )}
       <div className="actions">
-        <button disabled={locked || stale}>{locked ? 'Saving…' : submitLabel}</button>
-        <button type="button" disabled={locked} onClick={onCancel}>
+        <button className="btn btn-primary btn-sm" disabled={locked || stale}>
+          {locked && <span className="spinner spinner-sm" aria-hidden="true" />}
+          {locked ? 'Saving…' : submitLabel}
+        </button>
+        <button
+          className="btn btn-secondary btn-sm"
+          type="button"
+          disabled={locked}
+          onClick={onCancel}
+        >
           Cancel
         </button>
       </div>
@@ -2676,6 +3928,17 @@ import { useBoards } from '../hooks/BoardContext';
 import { CardComposer } from './CardComposer';
 import { CardForm } from './CardForm';
 import { TitleForm } from '@/components/common/TitleForm';
+
+const priorityBadge = (priority) => {
+  const map = {
+    low: 'badge-low',
+    medium: 'badge-medium',
+    high: 'badge-high',
+    urgent: 'badge-urgent',
+  };
+  return `badge ${map[priority] || 'badge-medium'}`;
+};
+
 export function Kanban({ board: currentBoard }) {
   const { run, busy } = useBoards();
   const [editing, setEditing] = useState(null);
@@ -2717,6 +3980,7 @@ export function Kanban({ board: currentBoard }) {
               </h2>
               <div className="actions">
                 <button
+                  className="btn btn-ghost btn-sm"
                   disabled={busy}
                   onClick={() => {
                     const title = window.prompt('Column name', column.title);
@@ -2724,16 +3988,17 @@ export function Kanban({ board: currentBoard }) {
                       void run(() => api.updateColumn(board._id, column._id, { title }, board.__v));
                   }}
                 >
-                  Rename
+                  ✏️
                 </button>
                 <button
+                  className="btn btn-ghost btn-sm"
                   disabled={busy}
                   onClick={() => {
                     if (window.confirm(`Delete ${column.title} and all its cards?`))
                       void run(() => api.deleteColumn(board._id, column._id, board.__v));
                   }}
                 >
-                  Delete column
+                  🗑️
                 </button>
               </div>
             </header>
@@ -2761,7 +4026,7 @@ export function Kanban({ board: currentBoard }) {
                             {...drag.dragHandleProps}
                             aria-label={`Drag ${card.title}`}
                           >
-                            Move card
+                            ⠿ Drag
                           </button>
                           {editing?.id === card._id ? (
                             <CardForm
@@ -2788,24 +4053,32 @@ export function Kanban({ board: currentBoard }) {
                                 <p className="description">{card.description}</p>
                               )}
                               <div className="metadata">
-                                <span>{card.priority}</span>
+                                <span className={priorityBadge(card.priority)}>
+                                  {card.priority}
+                                </span>
                                 {card.dueDate && (
-                                  <time dateTime={card.dueDate}>{card.dueDate.slice(0, 10)}</time>
+                                  <time className="badge badge-label" dateTime={card.dueDate}>
+                                    📅 {card.dueDate.slice(0, 10)}
+                                  </time>
                                 )}
                                 {card.labels.map((label, i) => (
-                                  <span key={`${label}-${i}`}>{label}</span>
+                                  <span className="badge badge-label" key={`${label}-${i}`}>
+                                    {label}
+                                  </span>
                                 ))}
                               </div>
                               <div className="actions">
                                 <button
+                                  className="btn btn-ghost btn-sm"
                                   disabled={busy}
                                   onClick={() =>
                                     setEditing({ id: card._id, card, version: board.__v })
                                   }
                                 >
-                                  Edit
+                                  ✏️ Edit
                                 </button>
                                 <button
+                                  className="btn btn-ghost btn-sm"
                                   disabled={busy}
                                   onClick={() => {
                                     if (window.confirm(`Delete ${card.title}?`))
@@ -2814,7 +4087,7 @@ export function Kanban({ board: currentBoard }) {
                                       );
                                   }}
                                 >
-                                  Delete card
+                                  🗑️ Delete
                                 </button>
                               </div>
                               <label className="move-select">
@@ -3274,14 +4547,7 @@ import globals from 'globals';
 
 export default [
   {
-    ignores: [
-      '**/node_modules/**',
-      '**/dist/**',
-      '.local/**',
-      '.test-artifacts/**',
-      'frontend/**',
-      'backend/**',
-    ],
+    ignores: ['**/node_modules/**', '**/dist/**', '.local/**', '.test-artifacts/**'],
   },
   js.configs.recommended,
   {
@@ -3753,7 +5019,7 @@ test('readiness reports database failures without leaking connection details', a
   assert.equal((await request(app).get('/api/health')).status, 200);
   const response = await request(app).get('/api/ready');
   assert.equal(response.status, 503);
-  assert.deepEqual(response.body, { status: 'unavailable' });
+  assert.deepEqual(response.body, { success: false, status: 'unavailable' });
   stub.mock.restore();
   assert.equal((await request(app).get('/api/ready')).status, 200);
 });
@@ -4158,7 +5424,7 @@ it('preserves an open card draft and blocks overwriting a newer live board versi
       <Kanban board={board} />
     </BoardProvider>,
   );
-  await userEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }));
+  await userEvent.click(screen.getByRole('button', { name: /edit/i }));
   await userEvent.type(screen.getByLabelText('Card title'), ' draft');
   const changed = structuredClone(board);
   changed.__v++;
@@ -4174,7 +5440,7 @@ it('preserves an open card draft and blocks overwriting a newer live board versi
   fireEvent.submit(screen.getByLabelText('Card title').closest('form'));
   expect(update).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole('button', { name: 'Cancel', exact: true }));
-  await userEvent.click(screen.getByRole('button', { name: 'Edit', exact: true }));
+  await userEvent.click(screen.getByRole('button', { name: /^✏️ edit$/i }));
   expect(screen.getByLabelText('Card title')).toHaveValue('Remote edit');
 });
 
@@ -4194,10 +5460,10 @@ it('loads the next board page through accessible navigation', async () => {
     </MemoryRouter>,
   );
   await screen.findByText('First page board');
-  expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
-  await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+  expect(screen.getByRole('button', { name: /previous/i })).toBeDisabled();
+  await userEvent.click(screen.getByRole('button', { name: /next/i }));
   await screen.findByText('Second page board');
-  expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: /next/i })).toBeDisabled();
   expect(list).toHaveBeenLastCalledWith(
     2,
     expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -4217,7 +5483,7 @@ it('restores drag handles when a card being edited is deleted in another tab', a
       <Kanban board={withTwoCards} />
     </BoardProvider>,
   );
-  await userEvent.click(screen.getAllByRole('button', { name: 'Edit', exact: true })[0]);
+  await userEvent.click(screen.getAllByRole('button', { name: /edit/i })[0]);
   const changed = structuredClone(withTwoCards);
   changed.columns[0].cards.shift();
   changed.__v++;
