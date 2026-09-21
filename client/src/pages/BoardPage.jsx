@@ -24,7 +24,11 @@ export function BoardPage() {
         </div>
         <div style={{ display: 'flex', gap: '20px', marginTop: '32px' }}>
           {[1, 2, 3].map((i) => (
-            <div key={i} className="skeleton" style={{ width: '320px', height: '300px', borderRadius: '14px' }} />
+            <div
+              key={i}
+              className="skeleton"
+              style={{ width: '320px', height: '300px', borderRadius: '14px' }}
+            />
           ))}
         </div>
       </main>
@@ -34,21 +38,36 @@ export function BoardPage() {
     return (
       <main id="main-content" tabIndex={-1} className="page">
         <div className="empty-state">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
             <circle cx="12" cy="12" r="10" />
             <line x1="15" y1="9" x2="9" y2="15" />
             <line x1="9" y1="9" x2="15" y2="15" />
           </svg>
           <h3>Board unavailable</h3>
-          <p>The board could not be opened. It may have been deleted or belong to another account.</p>
-          <Link to="/boards" className="btn btn-primary">Back to boards</Link>
+          <p>
+            The board could not be opened. It may have been deleted or belong to another account.
+          </p>
+          <Link to="/boards" className="btn btn-primary">
+            Back to boards
+          </Link>
         </div>
       </main>
     );
 
   return (
     <main id="main-content" tabIndex={-1} className="board-page">
-      <Link to="/boards" className="back-link">← All boards</Link>
+      <Link to="/boards" className="back-link">
+        ← All boards
+      </Link>
       <div className="board-heading">
         <div>
           <p className="eyebrow">KEEP THINGS MOVING</p>
@@ -99,7 +118,17 @@ export function BoardPage() {
         Space to drop.
       </p>
       {busy && (
-        <p role="status" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px', fontSize: 'var(--text-sm)', color: 'var(--color-primary-500)' }}>
+        <p
+          role="status"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            marginTop: '12px',
+            fontSize: 'var(--text-sm)',
+            color: 'var(--color-primary-500)',
+          }}
+        >
           <span className="spinner spinner-sm" aria-hidden="true" />
           Saving changes…
         </p>

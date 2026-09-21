@@ -21,7 +21,10 @@ try {
     server.once('error', reject);
     server.listen(config.PORT, config.HOST, resolve);
   });
-  logger.info(`Flowboard API running`, { url: `http://localhost:${config.PORT}`, env: config.NODE_ENV });
+  logger.info(`Flowboard API running`, {
+    url: `http://localhost:${config.PORT}`,
+    env: config.NODE_ENV,
+  });
 
   let stopping = false;
   const shutdown = () => {

@@ -81,7 +81,12 @@ select {
 /* =========================================
    Typography
    ========================================= */
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   font-family: var(--font-heading);
   line-height: var(--leading-tight);
   letter-spacing: -0.03em;
@@ -168,7 +173,9 @@ a:hover {
   background: linear-gradient(135deg, var(--color-primary-600), var(--color-primary-500));
   color: var(--color-text-inverse);
   border-color: transparent;
-  box-shadow: var(--shadow-sm), 0 0 0 0 var(--color-primary-500);
+  box-shadow:
+    var(--shadow-sm),
+    0 0 0 0 var(--color-primary-500);
 }
 
 .btn-primary::after {
@@ -183,7 +190,9 @@ a:hover {
 }
 
 .btn-primary:hover:not(:disabled) {
-  box-shadow: var(--shadow-md), 0 0 0 3px hsl(162 55% 35% / 0.15);
+  box-shadow:
+    var(--shadow-md),
+    0 0 0 3px hsl(162 55% 35% / 0.15);
 }
 
 .btn-primary:hover:not(:disabled)::after {
@@ -622,7 +631,9 @@ label {
   color: var(--color-text-muted);
   border-radius: var(--radius-md);
   font-size: var(--text-lg);
-  transition: color var(--duration-fast), background var(--duration-fast);
+  transition:
+    color var(--duration-fast),
+    background var(--duration-fast);
   min-width: 36px;
   min-height: 36px;
   display: inline-flex;
@@ -782,12 +793,24 @@ label {
 }
 
 /* Stagger board tiles */
-.board-tile:nth-child(1) { animation-delay: 0ms; }
-.board-tile:nth-child(2) { animation-delay: 60ms; }
-.board-tile:nth-child(3) { animation-delay: 120ms; }
-.board-tile:nth-child(4) { animation-delay: 180ms; }
-.board-tile:nth-child(5) { animation-delay: 240ms; }
-.board-tile:nth-child(6) { animation-delay: 300ms; }
+.board-tile:nth-child(1) {
+  animation-delay: 0ms;
+}
+.board-tile:nth-child(2) {
+  animation-delay: 60ms;
+}
+.board-tile:nth-child(3) {
+  animation-delay: 120ms;
+}
+.board-tile:nth-child(4) {
+  animation-delay: 180ms;
+}
+.board-tile:nth-child(5) {
+  animation-delay: 240ms;
+}
+.board-tile:nth-child(6) {
+  animation-delay: 300ms;
+}
 
 /* =========================================
    Board Page
@@ -937,7 +960,9 @@ label {
   border-radius: var(--radius-sm);
   cursor: grab;
   touch-action: none;
-  transition: background var(--duration-fast), color var(--duration-fast);
+  transition:
+    background var(--duration-fast),
+    color var(--duration-fast);
 }
 
 .drag-handle:hover {
