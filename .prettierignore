@@ -1,0 +1,8 @@
+node_modules
+**/dist
+.local
+.test-artifacts
+**/.env
+package-lock.json
+README.md
+docs/guide.template.md

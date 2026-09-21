@@ -1,0 +1,16 @@
+{
+  "name": "@flowboard/shared",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./schemas": "./schemas/index.js",
+    "./constants": "./constants/index.js"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "zod": "^4.1.12"
+  }
+}
