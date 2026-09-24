@@ -2,6 +2,7 @@ import { request, write } from '@/services/http';
 const boardPath = (id) => `/boards/${id}`;
 const colPath = (id, col) => `${boardPath(id)}/columns/${col}`;
 const cardPath = (id, col, card) => `${colPath(id, col)}/cards/${card}`;
+const commentPath = (id, col, card, comment) => `${cardPath(id, col, card)}/comments/${comment}`;
 export const boardsApi = {
   boards: (page = 1, options) => request(`/boards?page=${page}`, options),
   board: (id, options) => request(boardPath(id), options),
@@ -24,4 +25,8 @@ export const boardsApi = {
   deleteCard: (id, col, card, version) => write(cardPath(id, col, card), 'DELETE', { version }),
   moveCard: (id, card, input, version) =>
     write(`${boardPath(id)}/cards/${card}/move`, 'POST', { ...input, version }),
+  addComment: (id, col, card, input, version) =>
+    write(`${cardPath(id, col, card)}/comments`, 'POST', { ...input, version }),
+  deleteComment: (id, col, card, comment, version) =>
+    write(commentPath(id, col, card, comment), 'DELETE', { version }),
 };

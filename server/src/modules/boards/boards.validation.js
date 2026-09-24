@@ -3,6 +3,7 @@ export {
   boardInput,
   columnInput,
   cardInput,
+  commentInput,
   objectId,
   versionInput,
   withVersion,

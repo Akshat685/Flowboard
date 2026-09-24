@@ -5,11 +5,12 @@ import {
   boardInput,
   columnInput,
   cardInput,
+  commentInput,
   versionInput,
   withVersion,
   moveInput,
 } from './boards.validation.js';
-import { boardService, findColumn, findCard } from './boards.service.js';
+import { boardService, findColumn, findCard, findComment } from './boards.service.js';
 function loadedBoard(req) {
   if (!req.board) throw new AppError(404, 'Board not found');
   return req.board;
@@ -103,6 +104,30 @@ export function boardController(io) {
     moveCard: async (req, res) => {
       const input = moveInput.parse(req.body);
       res.json({ board: await service.moveCard(loadedBoard(req), req.params.cardId, input) });
+    },
+    addComment: async (req, res) => {
+      const { version, ...input } = withVersion(commentInput).parse(req.body);
+      res.status(201).json({
+        board: await service.addComment(
+          loadedBoard(req),
+          req.params.columnId,
+          req.params.cardId,
+          input,
+          version,
+        ),
+      });
+    },
+    deleteComment: async (req, res) => {
+      const { version } = versionInput.parse(req.body);
+      res.json({
+        board: await service.deleteComment(
+          loadedBoard(req),
+          req.params.columnId,
+          req.params.cardId,
+          req.params.commentId,
+          version,
+        ),
+      });
     },
   };
 }

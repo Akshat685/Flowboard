@@ -1039,6 +1039,95 @@ label {
   justify-content: flex-start;
 }
 
+/* Card Comments */
+.card-comments {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.card-comments-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-secondary);
+  margin: 0 0 var(--space-3);
+}
+
+.comment-list {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.comment-item {
+  background: var(--color-bg);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  transition: background var(--duration-fast);
+}
+
+.comment-item:hover {
+  background: var(--color-primary-50);
+}
+
+.comment-text {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.comment-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+}
+
+.comment-time {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.comment-delete {
+  opacity: 0;
+  transition: opacity var(--duration-fast);
+  padding: 0 var(--space-1);
+  font-size: var(--text-xs);
+}
+
+.comment-item:hover .comment-delete {
+  opacity: 1;
+}
+
+.comment-form {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.comment-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  transition: border-color var(--duration-fast);
+}
+
+.comment-input:focus {
+  outline: none;
+  border-color: var(--color-border-focus);
+}
+
 /* Add card button */
 .add-card-button {
   width: 100%;

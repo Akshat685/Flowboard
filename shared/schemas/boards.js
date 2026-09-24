@@ -30,3 +30,4 @@ export const moveInput = withVersion(
     })
     .strict(),
 );
+export const commentInput = z.object({ text: title(1000) }).strict();

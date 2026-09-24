@@ -11,6 +11,11 @@ export function findCard(column, id) {
   if (!found) throw new AppError(404, 'Card not found');
   return found;
 }
+export function findComment(card, id) {
+  const found = card.comments.id(objectId.parse(id));
+  if (!found) throw new AppError(404, 'Comment not found');
+  return found;
+}
 function checkVersion(board, version) {
   if (board.__v !== version)
     throw new AppError(409, 'This board changed. Reload it and retry your action.');
@@ -104,6 +109,16 @@ export function boardService(io) {
         throw new AppError(400, 'Destination index is out of range');
       target.cards.splice(input.targetIndex, 0, data);
       // Removing and inserting the card commit atomically in one document save.
+      return save(board);
+    },
+    async addComment(board, columnId, cardId, input, version) {
+      checkVersion(board, version);
+      findCard(findColumn(board, columnId), cardId).comments.push(input);
+      return save(board);
+    },
+    async deleteComment(board, columnId, cardId, commentId, version) {
+      checkVersion(board, version);
+      findComment(findCard(findColumn(board, columnId), cardId), commentId).deleteOne();
       return save(board);
     },
   };

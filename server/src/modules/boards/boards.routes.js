@@ -24,5 +24,8 @@ export function boardRoutes(io) {
   router.patch(`${cardsPath}/:cardId`, controller.updateCard);
   router.delete(`${cardsPath}/:cardId`, controller.deleteCard);
   router.post('/:boardId/cards/:cardId/move', controller.moveCard);
+  const commentsPath = `${cardsPath}/:cardId/comments`;
+  router.post(commentsPath, controller.addComment);
+  router.delete(`${commentsPath}/:commentId`, controller.deleteComment);
   return router;
 }

@@ -16,6 +16,75 @@ const priorityBadge = (priority) => {
   return `badge ${map[priority] || 'badge-medium'}`;
 };
 
+function relativeTime(dateString) {
+  const seconds = Math.floor((Date.now() - new Date(dateString).getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function CardComments({ board, columnId, cardId, comments, run, busy }) {
+  const [text, setText] = useState('');
+  return (
+    <div className="card-comments">
+      <h4 className="card-comments-title">💬 Comments ({comments.length})</h4>
+      {comments.length > 0 && (
+        <ul className="comment-list">
+          {comments.map((comment) => (
+            <li key={comment._id} className="comment-item">
+              <p className="comment-text">{comment.text}</p>
+              <div className="comment-meta">
+                <time className="comment-time" dateTime={comment.createdAt}>
+                  {relativeTime(comment.createdAt)}
+                </time>
+                <button
+                  className="btn btn-ghost btn-sm comment-delete"
+                  disabled={busy}
+                  onClick={() => {
+                    if (window.confirm('Delete this comment?'))
+                      void run(() =>
+                        api.deleteComment(board._id, columnId, cardId, comment._id, board.__v),
+                      );
+                  }}
+                >
+                  🗑️
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        className="comment-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!text.trim() || busy) return;
+          void run(() =>
+            api.addComment(board._id, columnId, cardId, { text: text.trim() }, board.__v),
+          );
+          setText('');
+        }}
+      >
+        <input
+          className="comment-input"
+          placeholder="Add a comment…"
+          maxLength={1000}
+          value={text}
+          disabled={busy}
+          onChange={(event) => setText(event.target.value)}
+        />
+        <button className="btn btn-primary btn-sm" disabled={busy || !text.trim()}>
+          Post
+        </button>
+      </form>
+    </div>
+  );
+}
+
 export function Kanban({ board: currentBoard }) {
   const { run, busy } = useBoards();
   const [editing, setEditing] = useState(null);
@@ -106,23 +175,33 @@ export function Kanban({ board: currentBoard }) {
                             ⠿ Drag
                           </button>
                           {editing?.id === card._id ? (
-                            <CardForm
-                              card={editing.card}
-                              stale={editing.version !== currentBoard.__v}
-                              busy={busy}
-                              onCancel={() => setEditing(null)}
-                              onSubmit={(input) =>
-                                run(() =>
-                                  api.updateCard(
-                                    board._id,
-                                    column._id,
-                                    card._id,
-                                    input,
-                                    editing.version,
-                                  ),
-                                )
-                              }
-                            />
+                            <>
+                              <CardForm
+                                card={editing.card}
+                                stale={editing.version !== currentBoard.__v}
+                                busy={busy}
+                                onCancel={() => setEditing(null)}
+                                onSubmit={(input) =>
+                                  run(() =>
+                                    api.updateCard(
+                                      board._id,
+                                      column._id,
+                                      card._id,
+                                      input,
+                                      editing.version,
+                                    ),
+                                  )
+                                }
+                              />
+                              <CardComments
+                                board={currentBoard}
+                                columnId={column._id}
+                                cardId={card._id}
+                                comments={card.comments || []}
+                                run={run}
+                                busy={busy}
+                              />
+                            </>
                           ) : (
                             <>
                               <h3>{card.title}</h3>
@@ -143,6 +222,11 @@ export function Kanban({ board: currentBoard }) {
                                     {label}
                                   </span>
                                 ))}
+                                {card.comments?.length > 0 && (
+                                  <span className="badge badge-label">
+                                    💬 {card.comments.length}
+                                  </span>
+                                )}
                               </div>
                               <div className="actions">
                                 <button

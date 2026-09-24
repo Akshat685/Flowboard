@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 import { priorities } from '@flowboard/shared/constants';
 // Array order IS display order. Columns and cards remain embedded documents.
+export const commentSchema = new mongoose.Schema(
+  {
+    text: { type: String, required: true, trim: true, maxlength: 1000 },
+  },
+  { timestamps: true },
+);
 export const cardSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 160 },
@@ -11,6 +17,11 @@ export const cardSchema = new mongoose.Schema(
       type: [{ type: String, trim: true, maxlength: 32 }],
       default: [],
       validate: (value) => value.length <= 10,
+    },
+    comments: {
+      type: [commentSchema],
+      default: [],
+      validate: (value) => value.length <= 100,
     },
   },
   { timestamps: true },
