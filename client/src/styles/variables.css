@@ -53,6 +53,12 @@
   --color-priority-high: hsl(15 80% 55%);
   --color-priority-urgent: hsl(0 70% 50%);
 
+  /* Due-date urgency colors */
+  --color-due-overdue: hsl(350 72% 50%);
+  --color-due-overdue-bg: hsl(350 70% 94%);
+  --color-due-soon: hsl(32 90% 48%);
+  --color-due-soon-bg: hsl(32 85% 93%);
+
   /* Shadows */
   --shadow-xs: 0 1px 2px hsl(0 0% 0% / 0.04);
   --shadow-sm: 0 1px 3px hsl(0 0% 0% / 0.08), 0 1px 2px hsl(0 0% 0% / 0.04);
@@ -153,4 +159,10 @@
   --shadow-xl: 0 20px 60px hsl(0 0% 0% / 0.5), 0 8px 16px hsl(0 0% 0% / 0.3);
 
   --drag-over-bg: hsl(162 30% 18%);
+
+  /* Due-date urgency colors (dark) */
+  --color-due-overdue: hsl(350 65% 65%);
+  --color-due-overdue-bg: hsl(350 40% 16%);
+  --color-due-soon: hsl(32 80% 60%);
+  --color-due-soon-bg: hsl(32 40% 16%);
 }

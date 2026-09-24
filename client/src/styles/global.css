@@ -382,6 +382,22 @@ label {
   color: var(--color-primary-300);
 }
 
+.badge-overdue {
+  background: var(--color-due-overdue-bg);
+  color: var(--color-due-overdue);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.badge-due-soon {
+  background: var(--color-due-soon-bg);
+  color: var(--color-due-soon);
+}
+
+.badge-upcoming {
+  background: var(--color-primary-100);
+  color: var(--color-primary-700);
+}
+
 /* =========================================
    Skeleton Loader
    ========================================= */

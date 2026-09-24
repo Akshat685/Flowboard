@@ -10,7 +10,7 @@ import {
   withVersion,
   moveInput,
 } from './boards.validation.js';
-import { boardService, findColumn, findCard, findComment } from './boards.service.js';
+import { boardService, findColumn, findCard } from './boards.service.js';
 function loadedBoard(req) {
   if (!req.board) throw new AppError(404, 'Board not found');
   return req.board;

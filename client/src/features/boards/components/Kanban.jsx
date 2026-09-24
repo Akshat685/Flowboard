@@ -5,6 +5,7 @@ import { useBoards } from '../hooks/BoardContext';
 import { CardComposer } from './CardComposer';
 import { CardForm } from './CardForm';
 import { TitleForm } from '@/components/common/TitleForm';
+import { dueDateStatus, formatDueDate } from '@/utils/dates';
 
 const priorityBadge = (priority) => {
   const map = {
@@ -14,6 +15,15 @@ const priorityBadge = (priority) => {
     urgent: 'badge-urgent',
   };
   return `badge ${map[priority] || 'badge-medium'}`;
+};
+
+const dueDateBadge = (status) => {
+  const map = {
+    overdue: 'badge-overdue',
+    'due-soon': 'badge-due-soon',
+    upcoming: 'badge-upcoming',
+  };
+  return `badge ${map[status] || ''}`;
 };
 
 function relativeTime(dateString) {
@@ -212,11 +222,18 @@ export function Kanban({ board: currentBoard }) {
                                 <span className={priorityBadge(card.priority)}>
                                   {card.priority}
                                 </span>
-                                {card.dueDate && (
-                                  <time className="badge badge-label" dateTime={card.dueDate}>
-                                    📅 {card.dueDate.slice(0, 10)}
-                                  </time>
-                                )}
+                                {(() => {
+                                  const status = dueDateStatus(card.dueDate);
+                                  return status ? (
+                                    <time
+                                      className={dueDateBadge(status)}
+                                      dateTime={card.dueDate}
+                                      data-due-status={status}
+                                    >
+                                      📅 {formatDueDate(card.dueDate)}
+                                    </time>
+                                  ) : null;
+                                })()}
                                 {card.labels.map((label, i) => (
                                   <span className="badge badge-label" key={`${label}-${i}`}>
                                     {label}
