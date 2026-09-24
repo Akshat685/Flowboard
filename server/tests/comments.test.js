@@ -184,9 +184,7 @@ test('100-comment cap is enforced', async () => {
   let b = bRes.body.board;
   const col = b.columns[0]._id;
 
-  const cRes = await protect(
-    request(app).post(`/api/boards/${b._id}/columns/${col}/cards`),
-  )
+  const cRes = await protect(request(app).post(`/api/boards/${b._id}/columns/${col}/cards`))
     .set('Cookie', freshCookie)
     .send({ title: 'Limit Card', version: b.__v });
   assert.equal(cRes.status, 201);
