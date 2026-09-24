@@ -836,6 +836,12 @@ export const publicUser = (user) => ({
 import mongoose from 'mongoose';
 import { priorities } from '@flowboard/shared/constants';
 // Array order IS display order. Columns and cards remain embedded documents.
+export const commentSchema = new mongoose.Schema(
+  {
+    text: { type: String, required: true, trim: true, maxlength: 1000 },
+  },
+  { timestamps: true },
+);
 export const cardSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 160 },
@@ -846,6 +852,11 @@ export const cardSchema = new mongoose.Schema(
       type: [{ type: String, trim: true, maxlength: 32 }],
       default: [],
       validate: (value) => value.length <= 10,
+    },
+    comments: {
+      type: [commentSchema],
+      default: [],
+      validate: (value) => value.length <= 100,
     },
   },
   { timestamps: true },
@@ -950,6 +961,7 @@ export const moveInput = withVersion(
     })
     .strict(),
 );
+export const commentInput = z.object({ text: title(1000) }).strict();
 ```
 
 ### File: `shared/schemas/common.js`
@@ -2265,6 +2277,22 @@ label {
   color: var(--color-primary-300);
 }
 
+.badge-overdue {
+  background: var(--color-due-overdue-bg);
+  color: var(--color-due-overdue);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.badge-due-soon {
+  background: var(--color-due-soon-bg);
+  color: var(--color-due-soon);
+}
+
+.badge-upcoming {
+  background: var(--color-primary-100);
+  color: var(--color-primary-700);
+}
+
 /* =========================================
    Skeleton Loader
    ========================================= */
@@ -2922,6 +2950,95 @@ label {
   justify-content: flex-start;
 }
 
+/* Card Comments */
+.card-comments {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.card-comments-title {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-secondary);
+  margin: 0 0 var(--space-3);
+}
+
+.comment-list {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.comment-item {
+  background: var(--color-bg);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  transition: background var(--duration-fast);
+}
+
+.comment-item:hover {
+  background: var(--color-primary-50);
+}
+
+.comment-text {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.comment-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+}
+
+.comment-time {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.comment-delete {
+  opacity: 0;
+  transition: opacity var(--duration-fast);
+  padding: 0 var(--space-1);
+  font-size: var(--text-xs);
+}
+
+.comment-item:hover .comment-delete {
+  opacity: 1;
+}
+
+.comment-form {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.comment-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  transition: border-color var(--duration-fast);
+}
+
+.comment-input:focus {
+  outline: none;
+  border-color: var(--color-border-focus);
+}
+
 /* Add card button */
 .add-card-button {
   width: 100%;
@@ -3505,6 +3622,9 @@ export function boardRoutes(io) {
   router.patch(`${cardsPath}/:cardId`, controller.updateCard);
   router.delete(`${cardsPath}/:cardId`, controller.deleteCard);
   router.post('/:boardId/cards/:cardId/move', controller.moveCard);
+  const commentsPath = `${cardsPath}/:cardId/comments`;
+  router.post(commentsPath, controller.addComment);
+  router.delete(`${commentsPath}/:commentId`, controller.deleteComment);
   return router;
 }
 ```
@@ -3519,6 +3639,7 @@ import {
   boardInput,
   columnInput,
   cardInput,
+  commentInput,
   versionInput,
   withVersion,
   moveInput,
@@ -3618,6 +3739,30 @@ export function boardController(io) {
       const input = moveInput.parse(req.body);
       res.json({ board: await service.moveCard(loadedBoard(req), req.params.cardId, input) });
     },
+    addComment: async (req, res) => {
+      const { version, ...input } = withVersion(commentInput).parse(req.body);
+      res.status(201).json({
+        board: await service.addComment(
+          loadedBoard(req),
+          req.params.columnId,
+          req.params.cardId,
+          input,
+          version,
+        ),
+      });
+    },
+    deleteComment: async (req, res) => {
+      const { version } = versionInput.parse(req.body);
+      res.json({
+        board: await service.deleteComment(
+          loadedBoard(req),
+          req.params.columnId,
+          req.params.cardId,
+          req.params.commentId,
+          version,
+        ),
+      });
+    },
   };
 }
 ```
@@ -3636,6 +3781,11 @@ export function findColumn(board, id) {
 export function findCard(column, id) {
   const found = column.cards.id(objectId.parse(id));
   if (!found) throw new AppError(404, 'Card not found');
+  return found;
+}
+export function findComment(card, id) {
+  const found = card.comments.id(objectId.parse(id));
+  if (!found) throw new AppError(404, 'Comment not found');
   return found;
 }
 function checkVersion(board, version) {
@@ -3733,6 +3883,16 @@ export function boardService(io) {
       // Removing and inserting the card commit atomically in one document save.
       return save(board);
     },
+    async addComment(board, columnId, cardId, input, version) {
+      checkVersion(board, version);
+      findCard(findColumn(board, columnId), cardId).comments.push(input);
+      return save(board);
+    },
+    async deleteComment(board, columnId, cardId, commentId, version) {
+      checkVersion(board, version);
+      findComment(findCard(findColumn(board, columnId), cardId), commentId).deleteOne();
+      return save(board);
+    },
   };
 }
 ```
@@ -3745,6 +3905,7 @@ export {
   boardInput,
   columnInput,
   cardInput,
+  commentInput,
   objectId,
   versionInput,
   withVersion,
@@ -3928,6 +4089,7 @@ import { useBoards } from '../hooks/BoardContext';
 import { CardComposer } from './CardComposer';
 import { CardForm } from './CardForm';
 import { TitleForm } from '@/components/common/TitleForm';
+import { dueDateStatus, formatDueDate } from '@/utils/dates';
 
 const priorityBadge = (priority) => {
   const map = {
@@ -3938,6 +4100,84 @@ const priorityBadge = (priority) => {
   };
   return `badge ${map[priority] || 'badge-medium'}`;
 };
+
+const dueDateBadge = (status) => {
+  const map = {
+    overdue: 'badge-overdue',
+    'due-soon': 'badge-due-soon',
+    upcoming: 'badge-upcoming',
+  };
+  return `badge ${map[status] || ''}`;
+};
+
+function relativeTime(dateString) {
+  const seconds = Math.floor((Date.now() - new Date(dateString).getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function CardComments({ board, columnId, cardId, comments, run, busy }) {
+  const [text, setText] = useState('');
+  return (
+    <div className="card-comments">
+      <h4 className="card-comments-title">💬 Comments ({comments.length})</h4>
+      {comments.length > 0 && (
+        <ul className="comment-list">
+          {comments.map((comment) => (
+            <li key={comment._id} className="comment-item">
+              <p className="comment-text">{comment.text}</p>
+              <div className="comment-meta">
+                <time className="comment-time" dateTime={comment.createdAt}>
+                  {relativeTime(comment.createdAt)}
+                </time>
+                <button
+                  className="btn btn-ghost btn-sm comment-delete"
+                  disabled={busy}
+                  onClick={() => {
+                    if (window.confirm('Delete this comment?'))
+                      void run(() =>
+                        api.deleteComment(board._id, columnId, cardId, comment._id, board.__v),
+                      );
+                  }}
+                >
+                  🗑️
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        className="comment-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!text.trim() || busy) return;
+          void run(() =>
+            api.addComment(board._id, columnId, cardId, { text: text.trim() }, board.__v),
+          );
+          setText('');
+        }}
+      >
+        <input
+          className="comment-input"
+          placeholder="Add a comment…"
+          maxLength={1000}
+          value={text}
+          disabled={busy}
+          onChange={(event) => setText(event.target.value)}
+        />
+        <button className="btn btn-primary btn-sm" disabled={busy || !text.trim()}>
+          Post
+        </button>
+      </form>
+    </div>
+  );
+}
 
 export function Kanban({ board: currentBoard }) {
   const { run, busy } = useBoards();
@@ -4029,23 +4269,33 @@ export function Kanban({ board: currentBoard }) {
                             ⠿ Drag
                           </button>
                           {editing?.id === card._id ? (
-                            <CardForm
-                              card={editing.card}
-                              stale={editing.version !== currentBoard.__v}
-                              busy={busy}
-                              onCancel={() => setEditing(null)}
-                              onSubmit={(input) =>
-                                run(() =>
-                                  api.updateCard(
-                                    board._id,
-                                    column._id,
-                                    card._id,
-                                    input,
-                                    editing.version,
-                                  ),
-                                )
-                              }
-                            />
+                            <>
+                              <CardForm
+                                card={editing.card}
+                                stale={editing.version !== currentBoard.__v}
+                                busy={busy}
+                                onCancel={() => setEditing(null)}
+                                onSubmit={(input) =>
+                                  run(() =>
+                                    api.updateCard(
+                                      board._id,
+                                      column._id,
+                                      card._id,
+                                      input,
+                                      editing.version,
+                                    ),
+                                  )
+                                }
+                              />
+                              <CardComments
+                                board={currentBoard}
+                                columnId={column._id}
+                                cardId={card._id}
+                                comments={card.comments || []}
+                                run={run}
+                                busy={busy}
+                              />
+                            </>
                           ) : (
                             <>
                               <h3>{card.title}</h3>
@@ -4056,16 +4306,28 @@ export function Kanban({ board: currentBoard }) {
                                 <span className={priorityBadge(card.priority)}>
                                   {card.priority}
                                 </span>
-                                {card.dueDate && (
-                                  <time className="badge badge-label" dateTime={card.dueDate}>
-                                    📅 {card.dueDate.slice(0, 10)}
-                                  </time>
-                                )}
+                                {(() => {
+                                  const status = dueDateStatus(card.dueDate);
+                                  return status ? (
+                                    <time
+                                      className={dueDateBadge(status)}
+                                      dateTime={card.dueDate}
+                                      data-due-status={status}
+                                    >
+                                      📅 {formatDueDate(card.dueDate)}
+                                    </time>
+                                  ) : null;
+                                })()}
                                 {card.labels.map((label, i) => (
                                   <span className="badge badge-label" key={`${label}-${i}`}>
                                     {label}
                                   </span>
                                 ))}
+                                {card.comments?.length > 0 && (
+                                  <span className="badge badge-label">
+                                    💬 {card.comments.length}
+                                  </span>
+                                )}
                               </div>
                               <div className="actions">
                                 <button
@@ -4292,6 +4554,7 @@ import { request, write } from '@/services/http';
 const boardPath = (id) => `/boards/${id}`;
 const colPath = (id, col) => `${boardPath(id)}/columns/${col}`;
 const cardPath = (id, col, card) => `${colPath(id, col)}/cards/${card}`;
+const commentPath = (id, col, card, comment) => `${cardPath(id, col, card)}/comments/${comment}`;
 export const boardsApi = {
   boards: (page = 1, options) => request(`/boards?page=${page}`, options),
   board: (id, options) => request(boardPath(id), options),
@@ -4314,6 +4577,10 @@ export const boardsApi = {
   deleteCard: (id, col, card, version) => write(cardPath(id, col, card), 'DELETE', { version }),
   moveCard: (id, card, input, version) =>
     write(`${boardPath(id)}/cards/${card}/move`, 'POST', { ...input, version }),
+  addComment: (id, col, card, input, version) =>
+    write(`${cardPath(id, col, card)}/comments`, 'POST', { ...input, version }),
+  deleteComment: (id, col, card, comment, version) =>
+    write(commentPath(id, col, card, comment), 'DELETE', { version }),
 };
 ```
 
