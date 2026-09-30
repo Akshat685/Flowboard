@@ -97,11 +97,19 @@ export default function AuthPage({ mode }) {
               minLength={8}
               maxLength={72}
               autoComplete={register ? 'new-password' : 'current-password'}
+              {...(register
+                ? {
+                    pattern: '[A-Z](?=.*[0-9])(?=.*[^A-Za-z0-9]).{7,71}',
+                    title:
+                      'Start with a capital letter and include letters, a number, and 1 special character',
+                  }
+                : {})}
             />
           </label>
           {register && (
             <small style={{ color: 'var(--color-text-muted)' }}>
-              At least 8 characters; at most 72 UTF-8 bytes.
+              Start with a capital letter. Include letters, a number, and 1 special character (8–72
+              characters).
             </small>
           )}
           {error && (

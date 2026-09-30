@@ -317,6 +317,12 @@ test('UTF-8 password bounds and document limits are validated', async () => {
     password: '🧩'.repeat(25),
   });
   assert.equal(password.status, 400);
+  const weak = await protect(agent.post('/api/auth/register')).send({
+    name: 'Weak password',
+    email: 'weak@example.com',
+    password: 'password',
+  });
+  assert.equal(weak.status, 400);
   const board = new Board({
     owner: new mongoose.Types.ObjectId(),
     title: 'Limits',

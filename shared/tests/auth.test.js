@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { credentials } from '../schemas/auth.js';
+import { credentials, registration } from '../schemas/auth.js';
 test('shared password validation preserves Node UTF-8 byte limits in browser-safe code', () => {
   for (const password of [
     'a'.repeat(7),
@@ -21,4 +21,12 @@ test('shared password validation preserves Node UTF-8 byte limits in browser-saf
       expected,
     );
   }
+});
+test('registration passwords must start with a capital letter and include letters, a number, and a special character', () => {
+  const base = { name: 'Alex', email: 'person@example.com' };
+  assert.equal(registration.safeParse({ ...base, password: 'Testing123!safe' }).success, true);
+  assert.equal(registration.safeParse({ ...base, password: 'testing123!safe' }).success, false);
+  assert.equal(registration.safeParse({ ...base, password: 'TestingSafe!' }).success, false);
+  assert.equal(registration.safeParse({ ...base, password: 'Testing123safe' }).success, false);
+  assert.equal(registration.safeParse({ ...base, password: 'T1234567' }).success, false);
 });
