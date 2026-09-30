@@ -4191,6 +4191,23 @@ export function Kanban({ board: currentBoard }) {
       setEditing(null);
     }
   }, [currentBoard, editing]);
+  // Auto-sync the editing version when only comments changed — not card content.
+  // This prevents a false "board changed" stale warning after the user's own comment action.
+  useEffect(() => {
+    if (!editing || editing.version === currentBoard.__v) return;
+    const card = currentBoard.columns.flatMap((col) => col.cards).find((c) => c._id === editing.id);
+    if (!card) return;
+    const prev = editing.card;
+    if (
+      card.title === prev.title &&
+      card.description === prev.description &&
+      card.priority === prev.priority &&
+      card.dueDate === prev.dueDate &&
+      JSON.stringify(card.labels) === JSON.stringify(prev.labels)
+    ) {
+      setEditing({ id: editing.id, card: prev, version: currentBoard.__v });
+    }
+  }, [currentBoard, editing]);
   // Keep the drag layout and expected version stable until drop/cancel.
   const board = dragBoard || currentBoard;
   const move = (cardId, sourceColumnId, targetColumnId, targetIndex) =>

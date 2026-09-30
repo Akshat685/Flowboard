@@ -7,6 +7,9 @@ import { dueDateStatus, formatDueDate } from '@/utils/dates';
 
 vi.mock('socket.io-client', () => ({ io: () => ({ on: vi.fn(), disconnect: vi.fn() }) }));
 
+// All date-dependent tests pin "now" to 2026-09-24 12:00 local time.
+const FIXED_NOW = new Date(2026, 8, 24, 12, 0, 0);
+
 function makeBoard(cards) {
   return {
     _id: '507f1f77bcf86cd799439012',
@@ -54,10 +57,12 @@ function renderBoard(board) {
 
 // ─── Unit tests for dueDateStatus ─────────────────────────────────
 describe('dueDateStatus', () => {
-  let dateSpy;
+  beforeEach(() => {
+    vi.useFakeTimers({ now: FIXED_NOW });
+  });
 
   afterEach(() => {
-    dateSpy?.mockRestore();
+    vi.useRealTimers();
   });
 
   it('returns null for a falsy due date', () => {
@@ -67,24 +72,19 @@ describe('dueDateStatus', () => {
   });
 
   it('returns "overdue" for a past date', () => {
-    // Fix "now" to 2026-09-24 noon local
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
     expect(dueDateStatus('2026-09-20T00:00:00.000Z')).toBe('overdue');
   });
 
   it('returns "due-soon" for a date within the next 48 hours', () => {
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
     // Tomorrow (Sep 25) is within 48h of Sep 24
     expect(dueDateStatus('2026-09-25T00:00:00.000Z')).toBe('due-soon');
   });
 
   it('returns "due-soon" for today', () => {
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
     expect(dueDateStatus('2026-09-24T00:00:00.000Z')).toBe('due-soon');
   });
 
   it('returns "upcoming" for a date more than 48 hours out', () => {
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
     // Sep 30 is well beyond 48h
     expect(dueDateStatus('2026-09-30T00:00:00.000Z')).toBe('upcoming');
   });
@@ -92,10 +92,12 @@ describe('dueDateStatus', () => {
 
 // ─── Unit tests for formatDueDate ─────────────────────────────────
 describe('formatDueDate', () => {
-  let dateSpy;
+  beforeEach(() => {
+    vi.useFakeTimers({ now: FIXED_NOW });
+  });
 
   afterEach(() => {
-    dateSpy?.mockRestore();
+    vi.useRealTimers();
   });
 
   it('returns empty string for null', () => {
@@ -103,42 +105,34 @@ describe('formatDueDate', () => {
   });
 
   it('returns "X days overdue" for past dates', () => {
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
     expect(formatDueDate('2026-09-21T00:00:00.000Z')).toBe('3 days overdue');
   });
 
   it('returns "1 day overdue" for yesterday', () => {
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
     expect(formatDueDate('2026-09-23T00:00:00.000Z')).toBe('1 day overdue');
   });
 
   it('returns "Due today" for today', () => {
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
     expect(formatDueDate('2026-09-24T00:00:00.000Z')).toBe('Due today');
   });
 
   it('returns "Due tomorrow" for the next day', () => {
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
     expect(formatDueDate('2026-09-25T00:00:00.000Z')).toBe('Due tomorrow');
   });
 
   it('returns "Due Mon D" for a further-out date', () => {
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
     expect(formatDueDate('2026-10-03T00:00:00.000Z')).toBe('Due Oct 3');
   });
 });
 
 // ─── Integration tests: badge rendering in Kanban ─────────────────
 describe('due date badges on cards', () => {
-  let dateSpy;
-
   beforeEach(() => {
-    // Fix "now" so date comparisons are deterministic.
-    dateSpy = vi.spyOn(Date, 'now').mockReturnValue(new Date(2026, 8, 24, 12, 0, 0).getTime());
+    vi.useFakeTimers({ now: FIXED_NOW });
   });
 
   afterEach(() => {
-    dateSpy.mockRestore();
+    vi.useRealTimers();
   });
 
   it('shows an overdue badge with "overdue" styling for a past due date', () => {
@@ -178,3 +172,4 @@ describe('due date badges on cards', () => {
     expect(badge.className).toContain('badge-due-soon');
   });
 });
+

@@ -1,11 +1,15 @@
+import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { boardsApi as api } from '@/features/boards/boards.api';
 import { useBoards } from '@/features/boards/hooks/BoardContext';
+import { boardTemplates } from '@shared/constants';
 import { TitleForm } from '@/components/common/TitleForm';
+import { CustomSelect } from '@/components/common/CustomSelect';
 
-export function BoardsPage() {
+export default function BoardsPage() {
   const { boards, page, pages, changePage, loadingList, busy, run } = useBoards();
   const navigate = useNavigate();
+  const [template, setTemplate] = useState('kanban');
 
   return (
     <main id="main-content" tabIndex={-1} className="page">
@@ -15,15 +19,28 @@ export function BoardsPage() {
       </h1>
       <p className="muted">Create a board, break things down, and keep moving.</p>
 
-      <TitleForm
-        label="Create board"
-        busy={busy}
-        onSubmit={async (title) => {
-          const result = await run(() => api.createBoard({ title }));
-          if (result) navigate(`/boards/${result.board._id}`);
-          return result;
-        }}
-      />
+      <div className="board-create">
+        <div className="template-select">
+          <span className="template-select-label">Template</span>
+          <CustomSelect
+            disabled={busy}
+            value={template}
+            onChange={(val) => setTemplate(val)}
+            options={boardTemplates}
+          />
+        </div>
+        <TitleForm
+          label="Create board"
+          busy={busy}
+          onSubmit={async (title) => {
+            const result = await run(() => api.createBoard({ title, template }));
+            if (result) navigate(`/boards/${result.board._id}`);
+            return result;
+          }}
+        />
+      </div>
+
+
 
       {loadingList ? (
         <div className="board-grid">

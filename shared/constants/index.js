@@ -1,1 +1,1 @@
-export { priorities } from './boards.js';
+export { priorities, boardTemplates, templateIds } from './boards.js';

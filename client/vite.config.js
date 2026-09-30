@@ -18,6 +18,24 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       proxy: { '/api': { target }, '/socket.io': { target, ws: true } },
     },
+    build: {
+      // Generate source maps for production error tracking (hidden = not exposed to users)
+      sourcemap: 'hidden',
+      // Chunk splitting for optimal caching
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules/react-dom') || id.includes('node_modules/react/'))
+              return 'vendor-react';
+            if (id.includes('node_modules/react-router')) return 'vendor-router';
+            if (id.includes('node_modules/@hello-pangea/dnd')) return 'vendor-dnd';
+            if (id.includes('node_modules/socket.io')) return 'vendor-socket';
+          },
+        },
+      },
+      // Warn about large chunks
+      chunkSizeWarningLimit: 500,
+    },
     test: { environment: 'jsdom', setupFiles: ['./tests/setup.js'] },
   };
 });

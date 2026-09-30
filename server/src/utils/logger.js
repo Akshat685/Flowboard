@@ -13,14 +13,22 @@ function format(level, message, meta) {
   return `${prefix} ${message}${metaStr}`;
 }
 
-export const logger = {
-  info(message, meta = {}) {
-    process.stdout.write(format('info', message, meta) + '\n');
-  },
-  warn(message, meta = {}) {
-    process.stdout.write(format('warn', message, meta) + '\n');
-  },
-  error(message, meta = {}) {
-    process.stderr.write(format('error', message, meta) + '\n');
-  },
-};
+function makeLogger(baseMeta = {}) {
+  return {
+    info(message, meta = {}) {
+      process.stdout.write(format('info', message, { ...baseMeta, ...meta }) + '\n');
+    },
+    warn(message, meta = {}) {
+      process.stdout.write(format('warn', message, { ...baseMeta, ...meta }) + '\n');
+    },
+    error(message, meta = {}) {
+      process.stderr.write(format('error', message, { ...baseMeta, ...meta }) + '\n');
+    },
+    /** Create a child logger that inherits and extends the base metadata. */
+    child(childMeta) {
+      return makeLogger({ ...baseMeta, ...childMeta });
+    },
+  };
+}
+
+export const logger = makeLogger();

@@ -402,12 +402,10 @@ label {
    Skeleton Loader
    ========================================= */
 .skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--color-border) 25%,
-    hsl(0 0% 0% / 0.04) 50%,
-    var(--color-border) 75%
-  );
+  background: linear-gradient(90deg,
+      var(--color-border) 25%,
+      hsl(0 0% 0% / 0.04) 50%,
+      var(--color-border) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite ease-in-out;
   border-radius: var(--radius-sm);
@@ -740,6 +738,122 @@ label {
   white-space: nowrap;
 }
 
+.board-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  max-width: 700px;
+  margin: var(--space-6) 0;
+}
+
+.board-create .inline-form {
+  flex: 1;
+  min-width: 280px;
+  margin: 0;
+}
+
+.template-select {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.template-select-label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-secondary);
+}
+
+.custom-select-container {
+  position: relative;
+  width: 100%;
+  min-width: 160px;
+}
+
+.custom-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color var(--duration-fast);
+  user-select: none;
+}
+
+.custom-select-trigger:focus,
+.custom-select-trigger.open {
+  outline: none;
+  border-color: var(--color-primary-500);
+}
+
+.custom-select-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-muted);
+  transition: transform var(--duration-fast);
+}
+
+.custom-select-trigger.open .custom-select-icon {
+  transform: rotate(180deg);
+}
+
+.custom-select-dropdown {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  width: 100%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-1);
+  margin: 0;
+  list-style: none;
+  z-index: 100;
+}
+
+.custom-select-option {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--duration-fast);
+}
+
+.custom-select-option:hover {
+  background-color: var(--color-primary-50);
+  color: var(--color-primary-800);
+}
+
+.custom-select-option.selected {
+  background-color: var(--color-primary-100);
+  color: var(--color-primary-700);
+  font-weight: var(--weight-medium);
+}
+
+[data-theme='dark'] .custom-select-option:hover {
+  background-color: hsl(162 30% 16%);
+  color: var(--color-primary-300);
+}
+
+[data-theme='dark'] .custom-select-option.selected {
+  background-color: hsl(162 40% 12%);
+  color: var(--color-primary-400);
+}
+
+.custom-select-container.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 /* =========================================
    Board Grid (Dashboard)
    ========================================= */
@@ -812,18 +926,23 @@ label {
 .board-tile:nth-child(1) {
   animation-delay: 0ms;
 }
+
 .board-tile:nth-child(2) {
   animation-delay: 60ms;
 }
+
 .board-tile:nth-child(3) {
   animation-delay: 120ms;
 }
+
 .board-tile:nth-child(4) {
   animation-delay: 180ms;
 }
+
 .board-tile:nth-child(5) {
   animation-delay: 240ms;
 }
+
 .board-tile:nth-child(6) {
   animation-delay: 300ms;
 }
@@ -844,7 +963,7 @@ label {
   margin-top: var(--space-6);
 }
 
-.board-heading > div {
+.board-heading>div {
   min-width: 0;
 }
 
@@ -1215,7 +1334,7 @@ label {
   position: relative;
 }
 
-.auth-intro > p:last-child {
+.auth-intro>p:last-child {
   color: hsl(0 0% 100% / 0.8);
   line-height: var(--leading-relaxed);
   max-width: 40ch;
@@ -1296,6 +1415,7 @@ label {
    Touch & Responsive
    ========================================= */
 @media (pointer: coarse) {
+
   button,
   select,
   input {
@@ -1364,6 +1484,7 @@ label {
 }
 
 @media (hover: none) {
+
   .board-tile:hover,
   .card:hover,
   .task-card:hover {

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { priorities } from '../constants/boards.js';
+import { priorities, templateIds } from '../constants/boards.js';
 import { objectId, title, withVersion } from './common.js';
 export const boardListInput = z
   .object({
@@ -8,7 +8,11 @@ export const boardListInput = z
   })
   .strict();
 export const boardInput = z
-  .object({ title: title(120), description: z.string().max(2000).optional() })
+  .object({
+    title: title(120),
+    description: z.string().max(2000).optional(),
+    template: z.enum(templateIds).optional(),
+  })
   .strict();
 export const columnInput = z.object({ title: title(80) }).strict();
 export const cardInput = z

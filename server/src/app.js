@@ -13,6 +13,7 @@ import { config } from './config/env.js';
 import { authenticate } from './middleware/auth.middleware.js';
 import { AppError } from './errors/AppError.js';
 import { errorHandler } from './middleware/error.middleware.js';
+import { requestId } from './middleware/requestId.middleware.js';
 import { apiRoutes } from './routes/index.js';
 import { mountClient } from './middleware/client.middleware.js';
 
@@ -76,6 +77,9 @@ export function createApplication() {
 
   app.disable('x-powered-by');
 
+  // Request tracing — assign a unique ID to every request
+  app.use(requestId);
+
   // Security headers
   app.use(
     helmet({
@@ -121,7 +125,10 @@ export function createApplication() {
 
   // Request logging — JSON in production, colored dev format otherwise
   if (config.NODE_ENV !== 'test') {
-    app.use(morgan(config.NODE_ENV === 'production' ? 'combined' : 'dev'));
+    morgan.token('request-id', (req) => req.id || '-');
+    const prodFormat =
+      ':request-id :remote-addr :method :url :status :res[content-length] - :response-time ms';
+    app.use(morgan(config.NODE_ENV === 'production' ? prodFormat : 'dev'));
   }
 
   // General API rate limiter — 200 requests per 15 minutes

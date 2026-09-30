@@ -24,23 +24,35 @@ try {
   logger.info(`Flowboard API running`, {
     url: `http://localhost:${config.PORT}`,
     env: config.NODE_ENV,
+    pid: process.pid,
   });
 
   let stopping = false;
-  const shutdown = () => {
+  const shutdown = (signal) => {
     if (stopping) return;
     stopping = true;
-    logger.info('Graceful shutdown initiated');
-    const deadline = setTimeout(() => process.exit(1), 10000);
+    logger.info(`Graceful shutdown initiated (${signal})`);
+    // Hard deadline: force-exit after 15 seconds if graceful shutdown stalls.
+    const deadline = setTimeout(() => {
+      logger.error('Shutdown deadline exceeded — forcing exit');
+      process.exit(1);
+    }, 15_000);
     deadline.unref();
-    io.close(async () => {
-      await disconnectDatabase();
-      logger.info('Shutdown complete');
-      process.exit(0);
+    // 1. Stop accepting new connections
+    server.close(() => {
+      // 2. Disconnect all sockets
+      io.close(async () => {
+        // 3. Close database
+        await disconnectDatabase();
+        logger.info('Shutdown complete');
+        process.exit(0);
+      });
     });
+    // Immediately stop accepting new Socket.IO connections while HTTP drains
+    io.disconnectSockets(true);
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   const stack = error instanceof Error ? error.stack : '';
@@ -49,3 +61,4 @@ try {
   await disconnectDatabase();
   process.exitCode = 1;
 }
+

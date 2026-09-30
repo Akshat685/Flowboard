@@ -4,7 +4,7 @@ import { useAuth } from '@/features/auth/hooks/AuthContext';
 import { useTheme } from '@/hooks/useTheme';
 import { errorMessage } from '@/utils/errors';
 
-export function AuthPage({ mode }) {
+export default function AuthPage({ mode }) {
   const { user, signIn, registerAccount } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();

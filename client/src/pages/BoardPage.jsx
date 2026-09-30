@@ -4,7 +4,7 @@ import { boardsApi as api } from '@/features/boards/boards.api';
 import { useBoards } from '@/features/boards/hooks/BoardContext';
 import { Kanban } from '@/features/boards/components/Kanban';
 
-export function BoardPage() {
+export default function BoardPage() {
   const { boardId } = useParams();
   const navigate = useNavigate();
   const { board, loadingBoard, busy, run, selectBoard } = useBoards();
@@ -96,6 +96,7 @@ export function BoardPage() {
           >
             📝 Description
           </button>
+
           <button
             className="btn btn-danger btn-sm"
             disabled={busy}

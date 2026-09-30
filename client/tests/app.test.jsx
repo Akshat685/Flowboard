@@ -111,7 +111,7 @@ describe('API contract and session handling', () => {
     await userEvent.type(screen.getByRole('textbox', { name: 'Create board' }), 'Launch');
     await userEvent.click(screen.getByRole('button', { name: 'Create board' }));
     await screen.findByRole('heading', { name: 'Launch' });
-    expect(create).toHaveBeenCalledWith({ title: 'Launch' });
+    expect(create).toHaveBeenCalledWith({ title: 'Launch', template: 'kanban' });
   });
   it('shows login errors and protects boards when no session exists', async () => {
     vi.spyOn(authApi, 'me').mockRejectedValue({ status: 401 });

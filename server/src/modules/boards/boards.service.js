@@ -1,4 +1,5 @@
 import { Board } from './boards.model.js';
+import { boardTemplates } from '@flowboard/shared/constants';
 import { objectId } from './boards.validation.js';
 import { AppError } from '../../errors/AppError.js';
 export function findColumn(board, id) {
@@ -43,10 +44,13 @@ export function boardService(io) {
       return { boards, page: currentPage, pages, total };
     },
     async create(owner, input) {
+      const { template: templateId, ...fields } = input;
+      const template =
+        boardTemplates.find((t) => t.id === templateId) || boardTemplates[0];
       const board = await Board.create({
-        ...input,
+        ...fields,
         owner,
-        columns: [{ title: 'To do' }, { title: 'In progress' }, { title: 'Done' }],
+        columns: template.columns.map((title) => ({ title })),
       });
       notify(board);
       return board;

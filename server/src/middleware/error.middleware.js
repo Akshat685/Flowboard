@@ -42,6 +42,7 @@ export const errorHandler = (error, _req, res, next) => {
   }
   if (status >= 500) {
     logger.error('Request failed', {
+      requestId: _req.id,
       name: error.name,
       message: error.message,
       ...(config.NODE_ENV !== 'production' ? { stack: error.stack } : {}),

@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 
-export function NotFoundPage() {
+export default function NotFoundPage() {
   return (
     <main className="page">
       <div className="empty-state" style={{ paddingTop: 'clamp(48px, 12vw, 120px)' }}>
