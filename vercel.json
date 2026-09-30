@@ -4,7 +4,13 @@
     "client": {
       "root": "client",
       "framework": "vite",
-      "installCommand": "cd .. && npm ci --ignore-scripts"
+      "installCommand": "cd .. && npm ci --ignore-scripts",
+      "rewrites": [
+        {
+          "source": "/((?!assets/).*)",
+          "destination": "/index.html"
+        }
+      ]
     },
     "server": {
       "root": "server",
