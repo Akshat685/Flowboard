@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import mongoose from 'mongoose';
+import { connectDatabase } from '../config/db.js';
 import { AppError } from '../errors/AppError.js';
 import { authRoutes } from '../modules/auth/auth.routes.js';
 import { boardRoutes } from '../modules/boards/boards.routes.js';
+import { logger } from '../utils/logger.js';
 
 const startTime = Date.now();
 const nodeVersion = process.version;
@@ -41,13 +43,15 @@ export function apiRoutes(io) {
     }
   });
 
-  // Database guard — rejects requests when DB is disconnected
-  router.use((_req, _res, next) => {
-    next(
-      mongoose.connection.readyState === 1
-        ? undefined
-        : new AppError(503, 'Database temporarily unavailable. Please retry shortly.'),
-    );
+  // Database guard — reconnects after idle drops instead of failing every request
+  router.use(async (_req, _res, next) => {
+    try {
+      await connectDatabase();
+      next();
+    } catch (error) {
+      logger.error('Database reconnect failed', { name: error.name, message: error.message });
+      next(new AppError(503, 'Database temporarily unavailable. Please retry shortly.'));
+    }
   });
 
   router.use('/auth', authRoutes(io));

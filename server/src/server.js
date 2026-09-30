@@ -59,8 +59,8 @@ try {
   logger.error(`Startup failed: ${message}`);
   if (stack) logger.error(stack);
   await disconnectDatabase();
-  if (onVercel) throw error;
-  process.exitCode = 1;
+  // On Vercel, still export the app so later requests can retry MongoDB.
+  if (!onVercel) process.exitCode = 1;
 }
 
 export default app;

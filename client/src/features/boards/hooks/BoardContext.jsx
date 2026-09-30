@@ -44,7 +44,7 @@ export function BoardProvider({ children }) {
         } = await boardsApi.boards(page, { signal: controller.signal });
         if (seq === sequence.current.list) {
           listPage.current = currentPage;
-          patch({ boards, page: currentPage, pages, total, loadingList: false });
+          patch({ boards, page: currentPage, pages, total, loadingList: false, error: '' });
         }
       } catch (error) {
         if (error.name === 'AbortError') return;
@@ -64,7 +64,7 @@ export function BoardProvider({ children }) {
       try {
         const { board } = await boardsApi.board(id, { signal: controller.signal });
         if (id === activeId.current && seq === sequence.current.board)
-          patch({ board, loadingBoard: false });
+          patch({ board, loadingBoard: false, error: '' });
       } catch (error) {
         if (error.name === 'AbortError') return;
         if (id === activeId.current && seq === sequence.current.board)
@@ -110,18 +110,24 @@ export function BoardProvider({ children }) {
   useEffect(() => {
     mounted.current = true;
     void loadList();
-    const socket = io(socketOrigin, { withCredentials: true, reconnectionAttempts: 2 });
+    const socket = io(socketOrigin, {
+      withCredentials: true,
+      reconnection: true,
+      reconnectionAttempts: 8,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 10000,
+    });
     let active = true;
     let reconnectTimer;
-    let failedAttempts = 0;
     const retrySocket = () => {
-      if (!active || reconnectTimer || failedAttempts >= 2) return;
+      if (!active || reconnectTimer || socket.connected) return;
       reconnectTimer = setTimeout(() => {
         reconnectTimer = undefined;
         if (active && !socket.connected) socket.connect();
       }, 10000);
     };
     const refresh = () => {
+      if (active && !socket.connected) socket.connect();
       void loadList();
       void loadBoard();
     };
@@ -136,12 +142,7 @@ export function BoardProvider({ children }) {
       if (boardId === activeId.current) void loadBoard();
     });
     socket.on('connect_error', () => {
-      failedAttempts += 1;
       patch({ live: false });
-      if (failedAttempts >= 2) {
-        socket.disconnect();
-        return;
-      }
       retrySocket();
     });
     socket.on('disconnect', (reason) => {

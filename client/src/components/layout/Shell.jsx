@@ -22,7 +22,15 @@ export function Shell() {
           Flowboard<span> / </span>
         </Link>
         <div className="actions">
-          <span className="live-indicator" aria-live="polite">
+          <span
+            className="live-indicator"
+            aria-live="polite"
+            title={
+              live
+                ? 'Live updates are connected. Other tabs refresh immediately.'
+                : 'Live updates are unavailable. Boards still save over HTTP and this page refreshes on its own.'
+            }
+          >
             <span className={`live-dot${live ? '' : ' offline'}`} aria-hidden="true" />
             {live ? 'Live' : 'Realtime off'}
           </span>

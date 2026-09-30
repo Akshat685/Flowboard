@@ -449,3 +449,13 @@ test('an authenticated socket disconnects when its token expires', async () => {
   await ready;
   assert.equal(await event(socket, 'disconnect'), 'io server disconnect');
 });
+
+test('API reconnects to MongoDB after the connection drops', async () => {
+  const agent = request.agent(app);
+  await registerAndLogin(agent, 'reconnect-user');
+  assert.equal((await agent.get('/api/boards')).status, 200);
+  await mongoose.disconnect();
+  assert.equal(mongoose.connection.readyState, 0);
+  assert.equal((await agent.get('/api/boards')).status, 200);
+  assert.equal((await request(app).get('/api/ready')).status, 200);
+});

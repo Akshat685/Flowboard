@@ -6,12 +6,13 @@ import { Board } from '../modules/boards/boards.model.js';
 
 let connecting;
 let listenersBound = false;
+let indexesReady = false;
 
 export async function connectDatabase() {
   if (mongoose.connection.readyState === 1) return;
   if (connecting) {
     await connecting;
-    return;
+    if (mongoose.connection.readyState === 1) return;
   }
   connecting = (async () => {
     mongoose.set('maxTimeMS', 5000);
@@ -30,12 +31,26 @@ export async function connectDatabase() {
         logger.error('MongoDB connection error', { message: error.message });
       });
     }
-    await mongoose.connect(config.MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
-      socketTimeoutMS: 10000,
-      bufferCommands: false,
-    });
-    await Promise.all([User.init(), Board.init()]);
+    const serverless = process.env.VERCEL === '1';
+    if (mongoose.connection.readyState === 0) {
+      await mongoose.connect(config.MONGODB_URI, {
+        serverSelectionTimeoutMS: serverless ? 8000 : 5000,
+        socketTimeoutMS: 10000,
+        bufferCommands: false,
+        maxPoolSize: serverless ? 5 : 10,
+      });
+    } else {
+      await mongoose.connection.asPromise();
+    }
+    if (mongoose.connection.readyState !== 1) {
+      throw new Error('MongoDB disconnected');
+    }
+    // Re-running Model.init() after a drop/reconnect tries to createCollection
+    // while the native client is still coming up.
+    if (!indexesReady) {
+      await Promise.all([User.init(), Board.init()]);
+      indexesReady = true;
+    }
   })();
   try {
     await connecting;
@@ -43,6 +58,7 @@ export async function connectDatabase() {
     connecting = undefined;
     throw error;
   }
+  connecting = undefined;
 }
 
 export async function disconnectDatabase() {
