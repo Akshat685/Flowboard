@@ -172,4 +172,3 @@ describe('due date badges on cards', () => {
     expect(badge.className).toContain('badge-due-soon');
   });
 });
-

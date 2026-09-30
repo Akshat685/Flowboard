@@ -40,8 +40,6 @@ export default function BoardsPage() {
         />
       </div>
 
-
-
       {loadingList ? (
         <div className="board-grid">
           {[1, 2, 3].map((i) => (

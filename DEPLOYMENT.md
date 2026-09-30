@@ -55,16 +55,16 @@ WantedBy=multi-user.target
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `NODE_ENV` | ✓ | `development` | `production` for deployed environments |
-| `PORT` | | `4001` | HTTP port |
-| `HOST` | | `127.0.0.1` | Bind address |
-| `MONGODB_URI` | ✓ | — | MongoDB connection string |
-| `CLIENT_ORIGIN` | ✓ | — | Frontend URL (**must be HTTPS in production**) |
-| `JWT_SECRET` | ✓ | — | ≥48 character signing secret |
-| `TRUST_PROXY` | | `""` | Proxy trust setting (e.g., `loopback`) |
-| `SERVE_CLIENT` | | auto | `true` to serve client build from Express |
+| Variable        | Required | Default       | Description                                    |
+| --------------- | -------- | ------------- | ---------------------------------------------- |
+| `NODE_ENV`      | ✓        | `development` | `production` for deployed environments         |
+| `PORT`          |          | `4001`        | HTTP port                                      |
+| `HOST`          |          | `127.0.0.1`   | Bind address                                   |
+| `MONGODB_URI`   | ✓        | —             | MongoDB connection string                      |
+| `CLIENT_ORIGIN` | ✓        | —             | Frontend URL (**must be HTTPS in production**) |
+| `JWT_SECRET`    | ✓        | —             | ≥48 character signing secret                   |
+| `TRUST_PROXY`   |          | `""`          | Proxy trust setting (e.g., `loopback`)         |
+| `SERVE_CLIENT`  |          | auto          | `true` to serve client build from Express      |
 
 ---
 
@@ -108,17 +108,24 @@ Set `TRUST_PROXY=loopback` in your `.env` when using this setup.
 
 ### Health Endpoints
 
-| Endpoint | Purpose | Use For |
-|----------|---------|---------|
-| `GET /api/health` | Liveness probe | Kubernetes liveness, uptime monitors |
-| `GET /api/ready` | Readiness probe | Kubernetes readiness, load balancer |
+| Endpoint          | Purpose         | Use For                              |
+| ----------------- | --------------- | ------------------------------------ |
+| `GET /api/health` | Liveness probe  | Kubernetes liveness, uptime monitors |
+| `GET /api/ready`  | Readiness probe | Kubernetes readiness, load balancer  |
 
 ### Structured Logging
 
 In production (`NODE_ENV=production`), all logs are JSON-formatted:
 
 ```json
-{"timestamp":"2026-09-30T12:00:00.000Z","level":"info","message":"Flowboard API running","url":"http://localhost:4001","env":"production","pid":12345}
+{
+  "timestamp": "2026-09-30T12:00:00.000Z",
+  "level": "info",
+  "message": "Flowboard API running",
+  "url": "http://localhost:4001",
+  "env": "production",
+  "pid": 12345
+}
 ```
 
 Each HTTP request is logged with a unique `X-Request-Id` for traceability.

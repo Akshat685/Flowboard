@@ -17,8 +17,12 @@ export function CustomSelect({ value, onChange, options, disabled, id }) {
   const selectedOption = options.find((opt) => opt.id === value);
 
   return (
-    <div className={`custom-select-container ${disabled ? 'disabled' : ''}`} ref={containerRef} id={id}>
-      <div 
+    <div
+      className={`custom-select-container ${disabled ? 'disabled' : ''}`}
+      ref={containerRef}
+      id={id}
+    >
+      <div
         className={`custom-select-trigger ${isOpen ? 'open' : ''}`}
         onClick={() => !disabled && setIsOpen(!isOpen)}
         role="button"
@@ -31,14 +35,23 @@ export function CustomSelect({ value, onChange, options, disabled, id }) {
         }}
       >
         <span>{selectedOption ? selectedOption.label : 'Select...'}</span>
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="custom-select-icon">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="custom-select-icon"
+        >
           <polyline points="6 9 12 15 18 9"></polyline>
         </svg>
       </div>
       {isOpen && (
         <ul className="custom-select-dropdown">
           {options.map((opt) => (
-            <li 
+            <li
               key={opt.id}
               className={`custom-select-option ${value === opt.id ? 'selected' : ''}`}
               onClick={() => {

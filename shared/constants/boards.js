@@ -7,7 +7,11 @@ export const boardTemplates = [
     label: 'Sprint Board',
     columns: ['Backlog', 'This Sprint', 'In Review', 'Done'],
   },
-  { id: 'content', label: 'Content Pipeline', columns: ['Ideas', 'Writing', 'Editing', 'Published'] },
+  {
+    id: 'content',
+    label: 'Content Pipeline',
+    columns: ['Ideas', 'Writing', 'Editing', 'Published'],
+  },
   { id: 'bugs', label: 'Bug Tracker', columns: ['Reported', 'Triaged', 'Fixing', 'Verified'] },
 ];
 

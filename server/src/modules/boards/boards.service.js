@@ -45,8 +45,7 @@ export function boardService(io) {
     },
     async create(owner, input) {
       const { template: templateId, ...fields } = input;
-      const template =
-        boardTemplates.find((t) => t.id === templateId) || boardTemplates[0];
+      const template = boardTemplates.find((t) => t.id === templateId) || boardTemplates[0];
       const board = await Board.create({
         ...fields,
         owner,

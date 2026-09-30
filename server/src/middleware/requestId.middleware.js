@@ -9,9 +9,7 @@ import { randomUUID } from 'node:crypto';
 export function requestId(req, res, next) {
   const forwarded = req.get('X-Request-Id');
   const id =
-    typeof forwarded === 'string' && /^[\w-]{1,128}$/.test(forwarded)
-      ? forwarded
-      : randomUUID();
+    typeof forwarded === 'string' && /^[\w-]{1,128}$/.test(forwarded) ? forwarded : randomUUID();
   req.id = id;
   res.set('X-Request-Id', id);
   next();
