@@ -394,6 +394,7 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
 import { config } from './config/env.js';
+import { connectDatabase } from './config/db.js';
 import { authenticate } from './middleware/auth.middleware.js';
 import { AppError } from './errors/AppError.js';
 import { errorHandler } from './middleware/error.middleware.js';
@@ -448,13 +449,19 @@ export function createApplication() {
   );
   const server = createServer(app);
 
+  const onVercel = process.env.VERCEL === '1';
   const io = new Server(server, {
     cors: { origin: corsOrigin, credentials: true },
+    // Vercel pins a WebSocket to one function instance. HTTP polling jumps
+    // instances and never completes Engine.IO's handshake.
+    transports: onVercel ? ['websocket'] : ['polling', 'websocket'],
+    allowUpgrades: !onVercel,
     allowRequest: (req, done) => done(null, isAllowedOrigin(req.headers.origin)),
   });
 
   io.use(async (socket, next) => {
     try {
+      await connectDatabase();
       // Cookie-parser only reads headers and writes cookie fields in this handshake.
       const request = socket.request;
       cookieParser()(request, {}, () => {});
@@ -606,7 +613,7 @@ process.on('unhandledRejection', (reason) => {
   if (!onVercel) process.exit(1);
 });
 
-const { app, server, io } = createApplication();
+const { server, io } = createApplication();
 
 try {
   await connectDatabase();
@@ -649,11 +656,13 @@ try {
   logger.error(`Startup failed: ${message}`);
   if (stack) logger.error(stack);
   await disconnectDatabase();
-  // On Vercel, still export the app so later requests can retry MongoDB.
+  // On Vercel, still export the HTTP server so later requests can retry MongoDB.
   if (!onVercel) process.exitCode = 1;
 }
 
-export default app;
+// Vercel must receive the Node HTTP server so Socket.IO can accept WebSocket upgrades.
+// Exporting only the Express app leaves /socket.io as a normal HTTP 404 and keeps "Realtime off".
+export default server;
 ```
 
 ### File: `server/src/routes/index.js`
@@ -4004,10 +4013,12 @@ export function BoardProvider({ children }) {
     void loadList();
     const socket = io(socketOrigin, {
       withCredentials: true,
+      // Vercel WebSockets reject Engine.IO's default long-poll handshake.
+      transports: ['websocket'],
       reconnection: true,
-      reconnectionAttempts: 8,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 10000,
+      reconnectionDelayMax: 30000,
     });
     let active = true;
     let reconnectTimer;
@@ -6643,17 +6654,21 @@ import { BoardProvider } from '@/features/boards/hooks/BoardContext';
 import { boardsApi } from '@/features/boards/boards.api';
 const transport = vi.hoisted(() => ({
   handlers: {},
+  options: {},
   connected: false,
   connect: vi.fn(),
   disconnect: vi.fn(),
 }));
 vi.mock('socket.io-client', () => ({
-  io: () => ({
-    ...transport,
-    on: (event, callback) => {
-      transport.handlers[event] = callback;
-    },
-  }),
+  io: (...args) => {
+    transport.options = args[1];
+    return {
+      ...transport,
+      on: (event, callback) => {
+        transport.handlers[event] = callback;
+      },
+    };
+  },
 }));
 it('retries a rejected socket handshake and stops retrying after unmount', async () => {
   vi.useFakeTimers();
@@ -6664,6 +6679,7 @@ it('retries a rejected socket handshake and stops retrying after unmount', async
         <p>Workspace</p>
       </BoardProvider>,
     );
+    expect(transport.options.transports).toEqual(['websocket']);
     await act(async () => transport.handlers.connect_error());
     await act(async () => vi.advanceTimersByTimeAsync(10000));
     expect(transport.connect).toHaveBeenCalledOnce();
