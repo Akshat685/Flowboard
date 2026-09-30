@@ -110,11 +110,12 @@ export function BoardProvider({ children }) {
   useEffect(() => {
     mounted.current = true;
     void loadList();
-    const socket = io(socketOrigin, { withCredentials: true });
+    const socket = io(socketOrigin, { withCredentials: true, reconnectionAttempts: 2 });
     let active = true;
     let reconnectTimer;
+    let failedAttempts = 0;
     const retrySocket = () => {
-      if (!active || reconnectTimer) return;
+      if (!active || reconnectTimer || failedAttempts >= 2) return;
       reconnectTimer = setTimeout(() => {
         reconnectTimer = undefined;
         if (active && !socket.connected) socket.connect();
@@ -135,7 +136,12 @@ export function BoardProvider({ children }) {
       if (boardId === activeId.current) void loadBoard();
     });
     socket.on('connect_error', () => {
+      failedAttempts += 1;
       patch({ live: false });
+      if (failedAttempts >= 2) {
+        socket.disconnect();
+        return;
+      }
       retrySocket();
     });
     socket.on('disconnect', (reason) => {

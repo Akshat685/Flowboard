@@ -1,0 +1,16 @@
+{
+  "name": "Flowboard",
+  "short_name": "Flowboard",
+  "description": "A Kanban board to organize your tasks, track progress, and keep your work moving.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#10211c",
+  "theme_color": "#1b6b52",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

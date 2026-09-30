@@ -24,7 +24,7 @@ export function Shell() {
         <div className="actions">
           <span className="live-indicator" aria-live="polite">
             <span className={`live-dot${live ? '' : ' offline'}`} aria-hidden="true" />
-            {live ? 'Live' : 'Reconnecting'}
+            {live ? 'Live' : 'Realtime off'}
           </span>
           <button
             className="theme-toggle"

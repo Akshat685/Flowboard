@@ -17,7 +17,7 @@ export default function AuthPage({ mode }) {
   if (user) return <Navigate to="/boards" replace />;
 
   return (
-    <main className="auth-page">
+    <main id="main-content" tabIndex={-1} className="auth-page">
       <div className="auth-intro">
         <p className="eyebrow">FLOWBOARD / YOUR WORK, IN VIEW</p>
         <h1>

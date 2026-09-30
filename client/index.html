@@ -3,30 +3,65 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#182a36" />
+    <meta name="theme-color" content="#1b6b52" />
+    <meta name="robots" content="index, follow" />
+    <meta name="author" content="Flowboard" />
     <meta
       name="description"
       content="Flowboard — A Kanban board to organize your tasks, track progress, and keep your work moving. Create boards, columns, and cards with drag-and-drop simplicity."
     />
-    <!-- Open Graph -->
+    <link rel="canonical" href="https://flowboard-blond.vercel.app/" />
+    <link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml" />
     <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:url" content="https://flowboard-blond.vercel.app/" />
     <meta property="og:title" content="Flowboard — Organize your work" />
     <meta
       property="og:description"
       content="A Kanban board to organize your tasks, track progress, and keep your work moving."
     />
     <meta property="og:site_name" content="Flowboard" />
-    <!-- Twitter Card -->
+    <meta property="og:image" content="https://flowboard-blond.vercel.app/favicon.svg" />
     <meta name="twitter:card" content="summary" />
     <meta name="twitter:title" content="Flowboard — Organize your work" />
     <meta
       name="twitter:description"
       content="A Kanban board to organize your tasks, track progress, and keep your work moving."
     />
-    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <meta name="twitter:image" content="https://flowboard-blond.vercel.app/favicon.svg" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap"
+    />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap"
+      />
+    </noscript>
     <title>Flowboard — Organize your work</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Flowboard",
+        "applicationCategory": "ProductivityApplication",
+        "operatingSystem": "Web",
+        "url": "https://flowboard-blond.vercel.app/",
+        "description": "A Kanban board to organize your tasks, track progress, and keep your work moving."
+      }
+    </script>
   </head>
   <body>
     <noscript>
@@ -50,7 +85,7 @@
         "
       >
         <div style="text-align: center">
-          <p style="margin: 0 0 12px; letter-spacing: 0.16em; font-size: 12px; opacity: 0.7">
+          <p style="margin: 0 0 12px; letter-spacing: 0.16em; font-size: 13px; opacity: 0.7">
             FLOWBOARD
           </p>
           <p style="margin: 0; font-size: 16px">Loading your workspace…</p>
