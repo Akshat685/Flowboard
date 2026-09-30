@@ -7,7 +7,9 @@ const env = environmentSchema.parse(process.env);
 export const config = {
   ...env,
   serveClient:
-    env.SERVE_CLIENT === undefined ? env.NODE_ENV === 'production' : env.SERVE_CLIENT === 'true',
+    env.SERVE_CLIENT === undefined
+      ? env.NODE_ENV === 'production' && process.env.VERCEL !== '1'
+      : env.SERVE_CLIENT === 'true',
   cookieName: env.NODE_ENV === 'production' ? '__Host-flowboard' : 'flowboard',
   tokenSeconds: 3600,
 };
