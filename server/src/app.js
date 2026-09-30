@@ -32,15 +32,41 @@ function sanitize(value) {
   return clean;
 }
 
+function vercelOrigins() {
+  return [
+    process.env.VERCEL_URL,
+    process.env.VERCEL_BRANCH_URL,
+    process.env.VERCEL_PROJECT_PRODUCTION_URL,
+  ]
+    .filter(Boolean)
+    .map((value) =>
+      value.startsWith('http://') || value.startsWith('https://')
+        ? new URL(value).origin
+        : `https://${value}`,
+    );
+}
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  return origin === config.CLIENT_ORIGIN || vercelOrigins().includes(origin);
+}
+
+function corsOrigin(origin, callback) {
+  callback(null, isAllowedOrigin(origin));
+}
+
 export function createApplication() {
   const app = express();
-  app.set('trust proxy', config.TRUST_PROXY.length ? config.TRUST_PROXY : false);
+  // Vercel terminates TLS one hop in front of the function.
+  app.set(
+    'trust proxy',
+    process.env.VERCEL === '1' ? 1 : config.TRUST_PROXY.length ? config.TRUST_PROXY : false,
+  );
   const server = createServer(app);
-  const allowedOrigin = (origin) => !origin || origin === config.CLIENT_ORIGIN;
 
   const io = new Server(server, {
-    cors: { origin: config.CLIENT_ORIGIN, credentials: true },
-    allowRequest: (req, done) => done(null, allowedOrigin(req.headers.origin)),
+    cors: { origin: corsOrigin, credentials: true },
+    allowRequest: (req, done) => done(null, isAllowedOrigin(req.headers.origin)),
   });
 
   io.use(async (socket, next) => {
@@ -94,16 +120,16 @@ export function createApplication() {
   // GZIP/Brotli compression for all responses
   app.use(compression());
 
-  // CORS — locked to CLIENT_ORIGIN
+  // CORS — CLIENT_ORIGIN, plus this Vercel deployment's public URLs
   app.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
-    if (!allowedOrigin(req.headers.origin)) {
+    if (!isAllowedOrigin(req.headers.origin)) {
       next(new AppError(403, 'Origin is not allowed'));
       return;
     }
     next();
   });
-  app.use(cors({ origin: config.CLIENT_ORIGIN, credentials: true }));
+  app.use(cors({ origin: corsOrigin, credentials: true }));
 
   // Body parsing with size limit
   app.use(express.json({ limit: '64kb' }));
