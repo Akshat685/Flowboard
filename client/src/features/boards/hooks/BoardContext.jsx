@@ -112,10 +112,12 @@ export function BoardProvider({ children }) {
     void loadList();
     const socket = io(socketOrigin, {
       withCredentials: true,
+      // Vercel WebSockets reject Engine.IO's default long-poll handshake.
+      transports: ['websocket'],
       reconnection: true,
-      reconnectionAttempts: 8,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 1000,
-      reconnectionDelayMax: 10000,
+      reconnectionDelayMax: 30000,
     });
     let active = true;
     let reconnectTimer;

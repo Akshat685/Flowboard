@@ -16,7 +16,8 @@
       "root": "server",
       "framework": "express",
       "entrypoint": "src/server.js",
-      "installCommand": "cd .. && npm ci --ignore-scripts"
+      "installCommand": "cd .. && npm ci --ignore-scripts",
+      "maxDuration": 300
     }
   },
   "rewrites": [

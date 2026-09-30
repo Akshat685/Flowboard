@@ -4,17 +4,21 @@ import { BoardProvider } from '@/features/boards/hooks/BoardContext';
 import { boardsApi } from '@/features/boards/boards.api';
 const transport = vi.hoisted(() => ({
   handlers: {},
+  options: {},
   connected: false,
   connect: vi.fn(),
   disconnect: vi.fn(),
 }));
 vi.mock('socket.io-client', () => ({
-  io: () => ({
-    ...transport,
-    on: (event, callback) => {
-      transport.handlers[event] = callback;
-    },
-  }),
+  io: (...args) => {
+    transport.options = args[1];
+    return {
+      ...transport,
+      on: (event, callback) => {
+        transport.handlers[event] = callback;
+      },
+    };
+  },
 }));
 it('retries a rejected socket handshake and stops retrying after unmount', async () => {
   vi.useFakeTimers();
@@ -25,6 +29,7 @@ it('retries a rejected socket handshake and stops retrying after unmount', async
         <p>Workspace</p>
       </BoardProvider>,
     );
+    expect(transport.options.transports).toEqual(['websocket']);
     await act(async () => transport.handlers.connect_error());
     await act(async () => vi.advanceTimersByTimeAsync(10000));
     expect(transport.connect).toHaveBeenCalledOnce();

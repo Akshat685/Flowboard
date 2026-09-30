@@ -10,6 +10,7 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { Server } from 'socket.io';
 import { config } from './config/env.js';
+import { connectDatabase } from './config/db.js';
 import { authenticate } from './middleware/auth.middleware.js';
 import { AppError } from './errors/AppError.js';
 import { errorHandler } from './middleware/error.middleware.js';
@@ -64,13 +65,19 @@ export function createApplication() {
   );
   const server = createServer(app);
 
+  const onVercel = process.env.VERCEL === '1';
   const io = new Server(server, {
     cors: { origin: corsOrigin, credentials: true },
+    // Vercel pins a WebSocket to one function instance. HTTP polling jumps
+    // instances and never completes Engine.IO's handshake.
+    transports: onVercel ? ['websocket'] : ['polling', 'websocket'],
+    allowUpgrades: !onVercel,
     allowRequest: (req, done) => done(null, isAllowedOrigin(req.headers.origin)),
   });
 
   io.use(async (socket, next) => {
     try {
+      await connectDatabase();
       // Cookie-parser only reads headers and writes cookie fields in this handshake.
       const request = socket.request;
       cookieParser()(request, {}, () => {});

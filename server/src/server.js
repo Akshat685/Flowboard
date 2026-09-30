@@ -16,7 +16,7 @@ process.on('unhandledRejection', (reason) => {
   if (!onVercel) process.exit(1);
 });
 
-const { app, server, io } = createApplication();
+const { server, io } = createApplication();
 
 try {
   await connectDatabase();
@@ -59,8 +59,10 @@ try {
   logger.error(`Startup failed: ${message}`);
   if (stack) logger.error(stack);
   await disconnectDatabase();
-  // On Vercel, still export the app so later requests can retry MongoDB.
+  // On Vercel, still export the HTTP server so later requests can retry MongoDB.
   if (!onVercel) process.exitCode = 1;
 }
 
-export default app;
+// Vercel must receive the Node HTTP server so Socket.IO can accept WebSocket upgrades.
+// Exporting only the Express app leaves /socket.io as a normal HTTP 404 and keeps "Realtime off".
+export default server;
