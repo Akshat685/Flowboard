@@ -402,10 +402,12 @@ label {
    Skeleton Loader
    ========================================= */
 .skeleton {
-  background: linear-gradient(90deg,
-      var(--color-border) 25%,
-      hsl(0 0% 0% / 0.04) 50%,
-      var(--color-border) 75%);
+  background: linear-gradient(
+    90deg,
+    var(--color-border) 25%,
+    hsl(0 0% 0% / 0.04) 50%,
+    var(--color-border) 75%
+  );
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite ease-in-out;
   border-radius: var(--radius-sm);
@@ -451,6 +453,90 @@ label {
   width: 32px;
   height: 32px;
   border-width: 3px;
+}
+
+/* =========================================
+   Full-page loader
+   ========================================= */
+.page-loader {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  background:
+    radial-gradient(circle at top, hsl(162 40% 18% / 0.45), transparent 42%), var(--color-bg);
+  animation: none;
+}
+
+.page-loader-card {
+  width: min(420px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: var(--space-4);
+  padding: var(--space-10) var(--space-6);
+  text-align: center;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  animation: scaleIn var(--duration-slow) var(--ease-out);
+}
+
+.page-loader-mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--color-primary-700), var(--color-primary-500));
+  color: var(--color-text-inverse);
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.04em;
+}
+
+.page-loader-card h1 {
+  margin: 0;
+  font-size: var(--text-2xl);
+}
+
+.page-loader-card p {
+  margin: 0;
+  max-width: 32ch;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
+.page-loader-card .btn {
+  margin-top: var(--space-2);
+}
+
+.page-loader-bar {
+  width: min(220px, 70%);
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+}
+
+.page-loader-bar span {
+  display: block;
+  width: 40%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary-500);
+  animation: pageLoaderSweep 1.2s var(--ease-out) infinite;
+}
+
+@keyframes pageLoaderSweep {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(320%);
+  }
 }
 
 /* =========================================
@@ -963,7 +1049,7 @@ label {
   margin-top: var(--space-6);
 }
 
-.board-heading>div {
+.board-heading > div {
   min-width: 0;
 }
 
@@ -1334,7 +1420,7 @@ label {
   position: relative;
 }
 
-.auth-intro>p:last-child {
+.auth-intro > p:last-child {
   color: hsl(0 0% 100% / 0.8);
   line-height: var(--leading-relaxed);
   max-width: 40ch;
@@ -1415,7 +1501,6 @@ label {
    Touch & Responsive
    ========================================= */
 @media (pointer: coarse) {
-
   button,
   select,
   input {
@@ -1484,7 +1569,6 @@ label {
 }
 
 @media (hover: none) {
-
   .board-tile:hover,
   .card:hover,
   .task-card:hover {

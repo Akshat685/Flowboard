@@ -34,7 +34,29 @@
         Flowboard requires JavaScript to run. Please enable JavaScript in your browser settings.
       </p>
     </noscript>
-    <div id="root"></div>
+    <div id="root">
+      <div
+        class="boot-loader"
+        role="status"
+        aria-live="polite"
+        style="
+          min-height: 100dvh;
+          display: grid;
+          place-items: center;
+          margin: 0;
+          background: #10211c;
+          color: #e8f3ee;
+          font-family: system-ui, sans-serif;
+        "
+      >
+        <div style="text-align: center">
+          <p style="margin: 0 0 12px; letter-spacing: 0.16em; font-size: 12px; opacity: 0.7">
+            FLOWBOARD
+          </p>
+          <p style="margin: 0; font-size: 16px">Loading your workspace…</p>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

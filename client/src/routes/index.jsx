@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
+import { PageLoader } from '@/components/common/PageLoader';
 import { ProtectedRoute } from './ProtectedRoute';
 
 const AuthPage = lazy(() => import('@/pages/AuthPage'));
@@ -8,14 +9,7 @@ const BoardPage = lazy(() => import('@/pages/BoardPage'));
 const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'));
 
 function SuspenseFallback() {
-  return (
-    <main className="page" role="status">
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '48px 0' }}>
-        <span className="spinner spinner-sm" aria-hidden="true" />
-        Loading…
-      </div>
-    </main>
-  );
+  return <PageLoader message="Loading your workspace…" />;
 }
 
 export function AppRoutes() {
