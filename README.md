@@ -243,7 +243,9 @@ const env = environmentSchema.parse(process.env);
 export const config = {
   ...env,
   serveClient:
-    env.SERVE_CLIENT === undefined ? env.NODE_ENV === 'production' : env.SERVE_CLIENT === 'true',
+    env.SERVE_CLIENT === undefined
+      ? env.NODE_ENV === 'production' && process.env.VERCEL !== '1'
+      : env.SERVE_CLIENT === 'true',
   cookieName: env.NODE_ENV === 'production' ? '__Host-flowboard' : 'flowboard',
   tokenSeconds: 3600,
 };
@@ -310,19 +312,69 @@ export const environmentSchema = z
 ```javascript
 import mongoose from 'mongoose';
 import { config } from './env.js';
+import { logger } from '../utils/logger.js';
 import { User } from '../modules/users/users.model.js';
 import { Board } from '../modules/boards/boards.model.js';
+
+let connecting;
+let listenersBound = false;
+let indexesReady = false;
+
 export async function connectDatabase() {
-  mongoose.set('maxTimeMS', 5000);
-  await mongoose.connect(config.MONGODB_URI, {
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 10000,
-    bufferCommands: false,
-  });
-  // Indexes, including unique email, must be ready before accepting traffic.
-  await Promise.all([User.init(), Board.init()]);
+  if (mongoose.connection.readyState === 1) return;
+  if (connecting) {
+    await connecting;
+    if (mongoose.connection.readyState === 1) return;
+  }
+  connecting = (async () => {
+    mongoose.set('maxTimeMS', 5000);
+    if (!listenersBound) {
+      listenersBound = true;
+      mongoose.connection.on('connected', () => {
+        logger.info('MongoDB connected');
+      });
+      mongoose.connection.on('disconnected', () => {
+        logger.warn('MongoDB disconnected');
+      });
+      mongoose.connection.on('reconnected', () => {
+        logger.info('MongoDB reconnected');
+      });
+      mongoose.connection.on('error', (error) => {
+        logger.error('MongoDB connection error', { message: error.message });
+      });
+    }
+    const serverless = process.env.VERCEL === '1';
+    if (mongoose.connection.readyState === 0) {
+      await mongoose.connect(config.MONGODB_URI, {
+        serverSelectionTimeoutMS: serverless ? 8000 : 5000,
+        socketTimeoutMS: 10000,
+        bufferCommands: false,
+        maxPoolSize: serverless ? 5 : 10,
+      });
+    } else {
+      await mongoose.connection.asPromise();
+    }
+    if (mongoose.connection.readyState !== 1) {
+      throw new Error('MongoDB disconnected');
+    }
+    // Re-running Model.init() after a drop/reconnect tries to createCollection
+    // while the native client is still coming up.
+    if (!indexesReady) {
+      await Promise.all([User.init(), Board.init()]);
+      indexesReady = true;
+    }
+  })();
+  try {
+    await connecting;
+  } catch (error) {
+    connecting = undefined;
+    throw error;
+  }
+  connecting = undefined;
 }
+
 export async function disconnectDatabase() {
+  connecting = undefined;
   await mongoose.disconnect();
 }
 ```
@@ -345,6 +397,7 @@ import { config } from './config/env.js';
 import { authenticate } from './middleware/auth.middleware.js';
 import { AppError } from './errors/AppError.js';
 import { errorHandler } from './middleware/error.middleware.js';
+import { requestId } from './middleware/requestId.middleware.js';
 import { apiRoutes } from './routes/index.js';
 import { mountClient } from './middleware/client.middleware.js';
 
@@ -363,15 +416,41 @@ function sanitize(value) {
   return clean;
 }
 
+function vercelOrigins() {
+  return [
+    process.env.VERCEL_URL,
+    process.env.VERCEL_BRANCH_URL,
+    process.env.VERCEL_PROJECT_PRODUCTION_URL,
+  ]
+    .filter(Boolean)
+    .map((value) =>
+      value.startsWith('http://') || value.startsWith('https://')
+        ? new URL(value).origin
+        : `https://${value}`,
+    );
+}
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  return origin === config.CLIENT_ORIGIN || vercelOrigins().includes(origin);
+}
+
+function corsOrigin(origin, callback) {
+  callback(null, isAllowedOrigin(origin));
+}
+
 export function createApplication() {
   const app = express();
-  app.set('trust proxy', config.TRUST_PROXY.length ? config.TRUST_PROXY : false);
+  // Vercel terminates TLS one hop in front of the function.
+  app.set(
+    'trust proxy',
+    process.env.VERCEL === '1' ? 1 : config.TRUST_PROXY.length ? config.TRUST_PROXY : false,
+  );
   const server = createServer(app);
-  const allowedOrigin = (origin) => !origin || origin === config.CLIENT_ORIGIN;
 
   const io = new Server(server, {
-    cors: { origin: config.CLIENT_ORIGIN, credentials: true },
-    allowRequest: (req, done) => done(null, allowedOrigin(req.headers.origin)),
+    cors: { origin: corsOrigin, credentials: true },
+    allowRequest: (req, done) => done(null, isAllowedOrigin(req.headers.origin)),
   });
 
   io.use(async (socket, next) => {
@@ -408,6 +487,9 @@ export function createApplication() {
 
   app.disable('x-powered-by');
 
+  // Request tracing — assign a unique ID to every request
+  app.use(requestId);
+
   // Security headers
   app.use(
     helmet({
@@ -422,16 +504,16 @@ export function createApplication() {
   // GZIP/Brotli compression for all responses
   app.use(compression());
 
-  // CORS — locked to CLIENT_ORIGIN
+  // CORS — CLIENT_ORIGIN, plus this Vercel deployment's public URLs
   app.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
-    if (!allowedOrigin(req.headers.origin)) {
+    if (!isAllowedOrigin(req.headers.origin)) {
       next(new AppError(403, 'Origin is not allowed'));
       return;
     }
     next();
   });
-  app.use(cors({ origin: config.CLIENT_ORIGIN, credentials: true }));
+  app.use(cors({ origin: corsOrigin, credentials: true }));
 
   // Body parsing with size limit
   app.use(express.json({ limit: '64kb' }));
@@ -453,7 +535,10 @@ export function createApplication() {
 
   // Request logging — JSON in production, colored dev format otherwise
   if (config.NODE_ENV !== 'test') {
-    app.use(morgan(config.NODE_ENV === 'production' ? 'combined' : 'dev'));
+    morgan.token('request-id', (req) => req.id || '-');
+    const prodFormat =
+      ':request-id :remote-addr :method :url :status :res[content-length] - :response-time ms';
+    app.use(morgan(config.NODE_ENV === 'production' ? prodFormat : 'dev'));
   }
 
   // General API rate limiter — 200 requests per 15 minutes
@@ -508,52 +593,67 @@ import { connectDatabase, disconnectDatabase } from './config/db.js';
 import { createApplication } from './app.js';
 import { logger } from './utils/logger.js';
 
+const onVercel = process.env.VERCEL === '1';
+
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught exception — shutting down', { name: error.name, message: error.message });
-  process.exit(1);
+  if (!onVercel) process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
   const message = reason instanceof Error ? reason.message : String(reason);
   logger.error('Unhandled promise rejection — shutting down', { message });
-  process.exit(1);
+  if (!onVercel) process.exit(1);
 });
+
+const { app, server, io } = createApplication();
 
 try {
   await connectDatabase();
-  const { server, io } = createApplication();
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(config.PORT, config.HOST, resolve);
-  });
-  logger.info(`Flowboard API running`, {
-    url: `http://localhost:${config.PORT}`,
-    env: config.NODE_ENV,
-  });
-
-  let stopping = false;
-  const shutdown = () => {
-    if (stopping) return;
-    stopping = true;
-    logger.info('Graceful shutdown initiated');
-    const deadline = setTimeout(() => process.exit(1), 10000);
-    deadline.unref();
-    io.close(async () => {
-      await disconnectDatabase();
-      logger.info('Shutdown complete');
-      process.exit(0);
+  if (!onVercel) {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(config.PORT, config.HOST, resolve);
     });
-  };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+    logger.info(`Flowboard API running`, {
+      url: `http://localhost:${config.PORT}`,
+      env: config.NODE_ENV,
+      pid: process.pid,
+    });
+
+    let stopping = false;
+    const shutdown = (signal) => {
+      if (stopping) return;
+      stopping = true;
+      logger.info(`Graceful shutdown initiated (${signal})`);
+      const deadline = setTimeout(() => {
+        logger.error('Shutdown deadline exceeded — forcing exit');
+        process.exit(1);
+      }, 15_000);
+      deadline.unref();
+      server.close(() => {
+        io.close(async () => {
+          await disconnectDatabase();
+          logger.info('Shutdown complete');
+          process.exit(0);
+        });
+      });
+      io.disconnectSockets(true);
+    };
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+  }
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   const stack = error instanceof Error ? error.stack : '';
   logger.error(`Startup failed: ${message}`);
   if (stack) logger.error(stack);
   await disconnectDatabase();
-  process.exitCode = 1;
+  // On Vercel, still export the app so later requests can retry MongoDB.
+  if (!onVercel) process.exitCode = 1;
 }
+
+export default app;
 ```
 
 ### File: `server/src/routes/index.js`
@@ -561,44 +661,58 @@ try {
 ```javascript
 import { Router } from 'express';
 import mongoose from 'mongoose';
+import { connectDatabase } from '../config/db.js';
 import { AppError } from '../errors/AppError.js';
 import { authRoutes } from '../modules/auth/auth.routes.js';
 import { boardRoutes } from '../modules/boards/boards.routes.js';
+import { logger } from '../utils/logger.js';
 
 const startTime = Date.now();
+const nodeVersion = process.version;
 
 export function apiRoutes(io) {
   const router = Router();
 
   // Liveness probe — always returns 200 if the process is running
   router.get('/health', (_req, res) => {
+    const mem = process.memoryUsage();
     res.json({
       success: true,
       status: 'ok',
       uptime: Math.floor((Date.now() - startTime) / 1000),
       timestamp: new Date().toISOString(),
       dbStatus: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      node: nodeVersion,
+      memory: {
+        rss: Math.round(mem.rss / 1_048_576),
+        heapUsed: Math.round(mem.heapUsed / 1_048_576),
+        heapTotal: Math.round(mem.heapTotal / 1_048_576),
+      },
     });
   });
 
-  // Readiness probe — checks database connectivity
+  // Readiness probe — checks database connectivity and latency
   router.get('/ready', async (_req, res) => {
     try {
       if (mongoose.connection.readyState !== 1) throw new Error('Disconnected');
+      const start = performance.now();
       await mongoose.connection.db.command({ ping: 1 }, { timeoutMS: 1500 });
-      res.json({ success: true, status: 'ready' });
+      const latencyMs = Math.round(performance.now() - start);
+      res.json({ success: true, status: 'ready', dbLatencyMs: latencyMs });
     } catch {
       res.status(503).json({ success: false, status: 'unavailable' });
     }
   });
 
-  // Database guard — rejects requests when DB is disconnected
-  router.use((_req, _res, next) => {
-    next(
-      mongoose.connection.readyState === 1
-        ? undefined
-        : new AppError(503, 'Database temporarily unavailable. Please retry shortly.'),
-    );
+  // Database guard — reconnects after idle drops instead of failing every request
+  router.use(async (_req, _res, next) => {
+    try {
+      await connectDatabase();
+      next();
+    } catch (error) {
+      logger.error('Database reconnect failed', { name: error.name, message: error.message });
+      next(new AppError(503, 'Database temporarily unavailable. Please retry shortly.'));
+    }
   });
 
   router.use('/auth', authRoutes(io));
@@ -666,6 +780,7 @@ export const errorHandler = (error, _req, res, next) => {
   }
   if (status >= 500) {
     logger.error('Request failed', {
+      requestId: _req.id,
       name: error.name,
       message: error.message,
       ...(config.NODE_ENV !== 'production' ? { stack: error.stack } : {}),
@@ -895,12 +1010,29 @@ export const Board = mongoose.model('Board', boardSchema);
 
 ```javascript
 export const priorities = ['low', 'medium', 'high', 'urgent'];
+
+export const boardTemplates = [
+  { id: 'kanban', label: 'Basic Kanban', columns: ['To do', 'In progress', 'Done'] },
+  {
+    id: 'sprint',
+    label: 'Sprint Board',
+    columns: ['Backlog', 'This Sprint', 'In Review', 'Done'],
+  },
+  {
+    id: 'content',
+    label: 'Content Pipeline',
+    columns: ['Ideas', 'Writing', 'Editing', 'Published'],
+  },
+  { id: 'bugs', label: 'Bug Tracker', columns: ['Reported', 'Triaged', 'Fixing', 'Verified'] },
+];
+
+export const templateIds = boardTemplates.map((t) => t.id);
 ```
 
 ### File: `shared/constants/index.js`
 
 ```javascript
-export { priorities } from './boards.js';
+export { priorities, boardTemplates, templateIds } from './boards.js';
 ```
 
 ### File: `shared/schemas/auth.js`
@@ -909,28 +1041,40 @@ export { priorities } from './boards.js';
 import { z } from 'zod';
 import { title } from './common.js';
 // TextEncoder has identical UTF-8 length semantics in Node and the browser.
+const withinByteLimit = (value) => new TextEncoder().encode(value).length <= 72;
 const password = z
   .string()
   .min(8)
   .max(72)
-  .refine(
-    (value) => new TextEncoder().encode(value).length <= 72,
-    'Password must be at most 72 UTF-8 bytes',
-  );
+  .refine(withinByteLimit, 'Password must be at most 72 UTF-8 bytes');
+const registrationPassword = password.refine(
+  (value) =>
+    /^[A-Z]/.test(value) &&
+    /[A-Za-z]/.test(value) &&
+    /\d/.test(value) &&
+    /[^A-Za-z0-9]/.test(value),
+  'Password must start with a capital letter and include letters, a number, and 1 special character',
+);
 export const credentials = z
   .object({
     email: z.string().trim().toLowerCase().email().max(254),
     password,
   })
   .strict();
-export const registration = credentials.extend({ name: title(80) });
+export const registration = credentials
+  .omit({ password: true })
+  .extend({
+    name: title(80),
+    password: registrationPassword,
+  })
+  .strict();
 ```
 
 ### File: `shared/schemas/boards.js`
 
 ```javascript
 import { z } from 'zod';
-import { priorities } from '../constants/boards.js';
+import { priorities, templateIds } from '../constants/boards.js';
 import { objectId, title, withVersion } from './common.js';
 export const boardListInput = z
   .object({
@@ -939,7 +1083,11 @@ export const boardListInput = z
   })
   .strict();
 export const boardInput = z
-  .object({ title: title(120), description: z.string().max(2000).optional() })
+  .object({
+    title: title(120),
+    description: z.string().max(2000).optional(),
+    template: z.enum(templateIds).optional(),
+  })
   .strict();
 export const columnInput = z.object({ title: title(80) }).strict();
 export const cardInput = z
@@ -1144,18 +1292,95 @@ Vite proxies both `/api` and `/socket.io` to Express. Run the browser at `http:/
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#182a36" />
+    <meta name="theme-color" content="#1b6b52" />
+    <meta name="robots" content="index, follow" />
+    <meta name="author" content="Flowboard" />
     <meta
       name="description"
       content="Flowboard — A Kanban board to organize your tasks, track progress, and keep your work moving. Create boards, columns, and cards with drag-and-drop simplicity."
     />
-    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="canonical" href="https://flowboard-blond.vercel.app/" />
+    <link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:url" content="https://flowboard-blond.vercel.app/" />
+    <meta property="og:title" content="Flowboard — Organize your work" />
+    <meta
+      property="og:description"
+      content="A Kanban board to organize your tasks, track progress, and keep your work moving."
+    />
+    <meta property="og:site_name" content="Flowboard" />
+    <meta property="og:image" content="https://flowboard-blond.vercel.app/favicon.svg" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Flowboard — Organize your work" />
+    <meta
+      name="twitter:description"
+      content="A Kanban board to organize your tasks, track progress, and keep your work moving."
+    />
+    <meta name="twitter:image" content="https://flowboard-blond.vercel.app/favicon.svg" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap"
+    />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap"
+      />
+    </noscript>
     <title>Flowboard — Organize your work</title>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Flowboard",
+        "applicationCategory": "ProductivityApplication",
+        "operatingSystem": "Web",
+        "url": "https://flowboard-blond.vercel.app/",
+        "description": "A Kanban board to organize your tasks, track progress, and keep your work moving."
+      }
+    </script>
   </head>
   <body>
-    <div id="root"></div>
+    <noscript>
+      <p style="padding: 2rem; font-family: system-ui, sans-serif">
+        Flowboard requires JavaScript to run. Please enable JavaScript in your browser settings.
+      </p>
+    </noscript>
+    <div id="root">
+      <div
+        class="boot-loader"
+        role="status"
+        aria-live="polite"
+        style="
+          min-height: 100dvh;
+          display: grid;
+          place-items: center;
+          margin: 0;
+          background: #10211c;
+          color: #e8f3ee;
+          font-family: system-ui, sans-serif;
+        "
+      >
+        <div style="text-align: center">
+          <p style="margin: 0 0 12px; letter-spacing: 0.16em; font-size: 13px; opacity: 0.7">
+            FLOWBOARD
+          </p>
+          <p style="margin: 0; font-size: 16px">Loading your workspace…</p>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>
@@ -1183,6 +1408,24 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       strictPort: true,
       proxy: { '/api': { target }, '/socket.io': { target, ws: true } },
+    },
+    build: {
+      // Generate source maps for production error tracking (hidden = not exposed to users)
+      sourcemap: 'hidden',
+      // Chunk splitting for optimal caching
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules/react-dom') || id.includes('node_modules/react/'))
+              return 'vendor-react';
+            if (id.includes('node_modules/react-router')) return 'vendor-router';
+            if (id.includes('node_modules/@hello-pangea/dnd')) return 'vendor-dnd';
+            if (id.includes('node_modules/socket.io')) return 'vendor-socket';
+          },
+        },
+      },
+      // Warn about large chunks
+      chunkSizeWarningLimit: 500,
     },
     test: { environment: 'jsdom', setupFiles: ['./tests/setup.js'] },
   };
@@ -1271,7 +1514,7 @@ export class ErrorBoundary extends Component {
 ```jsx
 import { Link } from 'react-router-dom';
 
-export function NotFoundPage() {
+export default function NotFoundPage() {
   return (
     <main className="page">
       <div className="empty-state" style={{ paddingTop: 'clamp(48px, 12vw, 120px)' }}>
@@ -1309,23 +1552,31 @@ export function NotFoundPage() {
 
 ```jsx
 import { useAuth } from '@/features/auth/hooks/AuthContext';
+import { DocumentHead } from '@/components/common/DocumentHead';
+import { PageLoader } from '@/components/common/PageLoader';
 import { AppRoutes } from '@/routes';
 export default function App() {
   const { loading, error, restore } = useAuth();
-  if (loading)
-    return (
-      <main className="page" role="status">
-        Restoring your session…
-      </main>
-    );
-  if (error)
-    return (
-      <main className="page">
-        <p role="alert">{error}</p>
-        <button onClick={restore}>Retry connection</button>
-      </main>
-    );
-  return <AppRoutes />;
+  return (
+    <>
+      <DocumentHead />
+      {loading ? (
+        <PageLoader />
+      ) : error ? (
+        <PageLoader
+          title="Can't reach Flowboard"
+          message={error}
+          action={
+            <button className="btn btn-primary" onClick={restore}>
+              Retry connection
+            </button>
+          }
+        />
+      ) : (
+        <AppRoutes />
+      )}
+    </>
+  );
 }
 ```
 
@@ -1366,24 +1617,34 @@ export function ProtectedRoute() {
 ### File: `client/src/routes/index.jsx`
 
 ```jsx
+import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
-import { AuthPage } from '@/pages/AuthPage';
-import { BoardsPage } from '@/pages/BoardsPage';
-import { BoardPage } from '@/pages/BoardPage';
-import { NotFoundPage } from '@/pages/NotFoundPage';
+import { PageLoader } from '@/components/common/PageLoader';
 import { ProtectedRoute } from './ProtectedRoute';
+
+const AuthPage = lazy(() => import('@/pages/AuthPage'));
+const BoardsPage = lazy(() => import('@/pages/BoardsPage'));
+const BoardPage = lazy(() => import('@/pages/BoardPage'));
+const NotFoundPage = lazy(() => import('@/pages/NotFoundPage'));
+
+function SuspenseFallback() {
+  return <PageLoader message="Loading your workspace…" />;
+}
+
 export function AppRoutes() {
   return (
-    <Routes>
-      <Route path="/login" element={<AuthPage key="login" mode="login" />} />
-      <Route path="/register" element={<AuthPage key="register" mode="register" />} />
-      <Route element={<ProtectedRoute />}>
-        <Route path="/boards" element={<BoardsPage />} />
-        <Route path="/boards/:boardId" element={<BoardPage />} />
-      </Route>
-      <Route path="/" element={<Navigate to="/boards" replace />} />
-      <Route path="*" element={<NotFoundPage />} />
-    </Routes>
+    <Suspense fallback={<SuspenseFallback />}>
+      <Routes>
+        <Route path="/login" element={<AuthPage key="login" mode="login" />} />
+        <Route path="/register" element={<AuthPage key="register" mode="register" />} />
+        <Route element={<ProtectedRoute />}>
+          <Route path="/boards" element={<BoardsPage />} />
+          <Route path="/boards/:boardId" element={<BoardPage />} />
+        </Route>
+        <Route path="/" element={<Navigate to="/boards" replace />} />
+        <Route path="*" element={<NotFoundPage />} />
+      </Routes>
+    </Suspense>
   );
 }
 ```
@@ -1467,9 +1728,17 @@ export function Shell() {
           Flowboard<span> / </span>
         </Link>
         <div className="actions">
-          <span className="live-indicator" aria-live="polite">
+          <span
+            className="live-indicator"
+            aria-live="polite"
+            title={
+              live
+                ? 'Live updates are connected. Other tabs refresh immediately.'
+                : 'Live updates are unavailable. Boards still save over HTTP and this page refreshes on its own.'
+            }
+          >
             <span className={`live-dot${live ? '' : ' offline'}`} aria-hidden="true" />
-            {live ? 'Live' : 'Reconnecting'}
+            {live ? 'Live' : 'Realtime off'}
           </span>
           <button
             className="theme-toggle"
@@ -1531,7 +1800,7 @@ import { useAuth } from '@/features/auth/hooks/AuthContext';
 import { useTheme } from '@/hooks/useTheme';
 import { errorMessage } from '@/utils/errors';
 
-export function AuthPage({ mode }) {
+export default function AuthPage({ mode }) {
   const { user, signIn, registerAccount } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
@@ -1544,7 +1813,7 @@ export function AuthPage({ mode }) {
   if (user) return <Navigate to="/boards" replace />;
 
   return (
-    <main className="auth-page">
+    <main id="main-content" tabIndex={-1} className="auth-page">
       <div className="auth-intro">
         <p className="eyebrow">FLOWBOARD / YOUR WORK, IN VIEW</p>
         <h1>
@@ -1624,11 +1893,19 @@ export function AuthPage({ mode }) {
               minLength={8}
               maxLength={72}
               autoComplete={register ? 'new-password' : 'current-password'}
+              {...(register
+                ? {
+                    pattern: '[A-Z](?=.*[0-9])(?=.*[^A-Za-z0-9]).{7,71}',
+                    title:
+                      'Start with a capital letter and include letters, a number, and 1 special character',
+                  }
+                : {})}
             />
           </label>
           {register && (
             <small style={{ color: 'var(--color-text-muted)' }}>
-              At least 8 characters; at most 72 UTF-8 bytes.
+              Start with a capital letter. Include letters, a number, and 1 special character (8–72
+              characters).
             </small>
           )}
           {error && (
@@ -1659,7 +1936,7 @@ import { boardsApi as api } from '@/features/boards/boards.api';
 import { useBoards } from '@/features/boards/hooks/BoardContext';
 import { Kanban } from '@/features/boards/components/Kanban';
 
-export function BoardPage() {
+export default function BoardPage() {
   const { boardId } = useParams();
   const navigate = useNavigate();
   const { board, loadingBoard, busy, run, selectBoard } = useBoards();
@@ -1751,6 +2028,7 @@ export function BoardPage() {
           >
             📝 Description
           </button>
+
           <button
             className="btn btn-danger btn-sm"
             disabled={busy}
@@ -1797,14 +2075,18 @@ export function BoardPage() {
 ### File: `client/src/pages/BoardsPage.jsx`
 
 ```jsx
+import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { boardsApi as api } from '@/features/boards/boards.api';
 import { useBoards } from '@/features/boards/hooks/BoardContext';
+import { boardTemplates } from '@shared/constants';
 import { TitleForm } from '@/components/common/TitleForm';
+import { CustomSelect } from '@/components/common/CustomSelect';
 
-export function BoardsPage() {
+export default function BoardsPage() {
   const { boards, page, pages, changePage, loadingList, busy, run } = useBoards();
   const navigate = useNavigate();
+  const [template, setTemplate] = useState('kanban');
 
   return (
     <main id="main-content" tabIndex={-1} className="page">
@@ -1814,15 +2096,26 @@ export function BoardsPage() {
       </h1>
       <p className="muted">Create a board, break things down, and keep moving.</p>
 
-      <TitleForm
-        label="Create board"
-        busy={busy}
-        onSubmit={async (title) => {
-          const result = await run(() => api.createBoard({ title }));
-          if (result) navigate(`/boards/${result.board._id}`);
-          return result;
-        }}
-      />
+      <div className="board-create">
+        <div className="template-select">
+          <span className="template-select-label">Template</span>
+          <CustomSelect
+            disabled={busy}
+            value={template}
+            onChange={(val) => setTemplate(val)}
+            options={boardTemplates}
+          />
+        </div>
+        <TitleForm
+          label="Create board"
+          busy={busy}
+          onSubmit={async (title) => {
+            const result = await run(() => api.createBoard({ title, template }));
+            if (result) navigate(`/boards/${result.board._id}`);
+            return result;
+          }}
+        />
+      </div>
 
       {loadingList ? (
         <div className="board-grid">
@@ -1893,7 +2186,6 @@ export function BoardsPage() {
 ### File: `client/src/styles/global.css`
 
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@700;800&family=Inter:wght@400;500;600&display=swap');
 @import './variables.css';
 @import './animations.css';
 
@@ -2077,11 +2369,12 @@ a:hover {
   content: '';
   position: absolute;
   top: 0;
-  left: -100%;
+  left: 0;
   width: 60%;
   height: 100%;
   background: linear-gradient(90deg, transparent, hsl(0 0% 100% / 0.15), transparent);
-  transition: left 0.5s ease;
+  transform: translateX(-170%);
+  transition: transform 0.5s ease;
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -2091,7 +2384,7 @@ a:hover {
 }
 
 .btn-primary:hover:not(:disabled)::after {
-  left: 200%;
+  transform: translateX(280%);
 }
 
 /* Secondary button */
@@ -2348,6 +2641,90 @@ label {
   width: 32px;
   height: 32px;
   border-width: 3px;
+}
+
+/* =========================================
+   Full-page loader
+   ========================================= */
+.page-loader {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  background:
+    radial-gradient(circle at top, hsl(162 40% 18% / 0.45), transparent 42%), var(--color-bg);
+  animation: none;
+}
+
+.page-loader-card {
+  width: min(420px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: var(--space-4);
+  padding: var(--space-10) var(--space-6);
+  text-align: center;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  animation: scaleIn var(--duration-slow) var(--ease-out);
+}
+
+.page-loader-mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--color-primary-700), var(--color-primary-500));
+  color: var(--color-text-inverse);
+  font-family: var(--font-display, inherit);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.04em;
+}
+
+.page-loader-card h1 {
+  margin: 0;
+  font-size: var(--text-2xl);
+}
+
+.page-loader-card p {
+  margin: 0;
+  max-width: 32ch;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+}
+
+.page-loader-card .btn {
+  margin-top: var(--space-2);
+}
+
+.page-loader-bar {
+  width: min(220px, 70%);
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-border);
+}
+
+.page-loader-bar span {
+  display: block;
+  width: 40%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--color-primary-500);
+  animation: pageLoaderSweep 1.2s var(--ease-out) infinite;
+}
+
+@keyframes pageLoaderSweep {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(320%);
+  }
 }
 
 /* =========================================
@@ -2635,6 +3012,122 @@ label {
   white-space: nowrap;
 }
 
+.board-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  max-width: 700px;
+  margin: var(--space-6) 0;
+}
+
+.board-create .inline-form {
+  flex: 1;
+  min-width: 280px;
+  margin: 0;
+}
+
+.template-select {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.template-select-label {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-secondary);
+}
+
+.custom-select-container {
+  position: relative;
+  width: 100%;
+  min-width: 160px;
+}
+
+.custom-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color var(--duration-fast);
+  user-select: none;
+}
+
+.custom-select-trigger:focus,
+.custom-select-trigger.open {
+  outline: none;
+  border-color: var(--color-primary-500);
+}
+
+.custom-select-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-muted);
+  transition: transform var(--duration-fast);
+}
+
+.custom-select-trigger.open .custom-select-icon {
+  transform: rotate(180deg);
+}
+
+.custom-select-dropdown {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  width: 100%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-1);
+  margin: 0;
+  list-style: none;
+  z-index: 100;
+}
+
+.custom-select-option {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--duration-fast);
+}
+
+.custom-select-option:hover {
+  background-color: var(--color-primary-50);
+  color: var(--color-primary-800);
+}
+
+.custom-select-option.selected {
+  background-color: var(--color-primary-100);
+  color: var(--color-primary-700);
+  font-weight: var(--weight-medium);
+}
+
+[data-theme='dark'] .custom-select-option:hover {
+  background-color: hsl(162 30% 16%);
+  color: var(--color-primary-300);
+}
+
+[data-theme='dark'] .custom-select-option.selected {
+  background-color: hsl(162 40% 12%);
+  color: var(--color-primary-400);
+}
+
+.custom-select-container.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 /* =========================================
    Board Grid (Dashboard)
    ========================================= */
@@ -2707,18 +3200,23 @@ label {
 .board-tile:nth-child(1) {
   animation-delay: 0ms;
 }
+
 .board-tile:nth-child(2) {
   animation-delay: 60ms;
 }
+
 .board-tile:nth-child(3) {
   animation-delay: 120ms;
 }
+
 .board-tile:nth-child(4) {
   animation-delay: 180ms;
 }
+
 .board-tile:nth-child(5) {
   animation-delay: 240ms;
 }
+
 .board-tile:nth-child(6) {
   animation-delay: 300ms;
 }
@@ -3438,7 +3936,7 @@ export function BoardProvider({ children }) {
         } = await boardsApi.boards(page, { signal: controller.signal });
         if (seq === sequence.current.list) {
           listPage.current = currentPage;
-          patch({ boards, page: currentPage, pages, total, loadingList: false });
+          patch({ boards, page: currentPage, pages, total, loadingList: false, error: '' });
         }
       } catch (error) {
         if (error.name === 'AbortError') return;
@@ -3458,7 +3956,7 @@ export function BoardProvider({ children }) {
       try {
         const { board } = await boardsApi.board(id, { signal: controller.signal });
         if (id === activeId.current && seq === sequence.current.board)
-          patch({ board, loadingBoard: false });
+          patch({ board, loadingBoard: false, error: '' });
       } catch (error) {
         if (error.name === 'AbortError') return;
         if (id === activeId.current && seq === sequence.current.board)
@@ -3504,17 +4002,24 @@ export function BoardProvider({ children }) {
   useEffect(() => {
     mounted.current = true;
     void loadList();
-    const socket = io(socketOrigin, { withCredentials: true });
+    const socket = io(socketOrigin, {
+      withCredentials: true,
+      reconnection: true,
+      reconnectionAttempts: 8,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 10000,
+    });
     let active = true;
     let reconnectTimer;
     const retrySocket = () => {
-      if (!active || reconnectTimer) return;
+      if (!active || reconnectTimer || socket.connected) return;
       reconnectTimer = setTimeout(() => {
         reconnectTimer = undefined;
         if (active && !socket.connected) socket.connect();
       }, 10000);
     };
     const refresh = () => {
+      if (active && !socket.connected) socket.connect();
       void loadList();
       void loadBoard();
     };
@@ -3771,6 +4276,7 @@ export function boardController(io) {
 
 ```javascript
 import { Board } from './boards.model.js';
+import { boardTemplates } from '@flowboard/shared/constants';
 import { objectId } from './boards.validation.js';
 import { AppError } from '../../errors/AppError.js';
 export function findColumn(board, id) {
@@ -3815,10 +4321,12 @@ export function boardService(io) {
       return { boards, page: currentPage, pages, total };
     },
     async create(owner, input) {
+      const { template: templateId, ...fields } = input;
+      const template = boardTemplates.find((t) => t.id === templateId) || boardTemplates[0];
       const board = await Board.create({
-        ...input,
+        ...fields,
         owner,
-        columns: [{ title: 'To do' }, { title: 'In progress' }, { title: 'Done' }],
+        columns: template.columns.map((title) => ({ title })),
       });
       notify(board);
       return board;
@@ -4614,15 +5122,27 @@ export { Kanban } from './components/Kanban';
 ### File: `server/.env.example`
 
 ```text
+# ── Flowboard Server Configuration ──────────────────────────
+# Copy this file to .env and fill in values. Never commit .env.
+
 NODE_ENV=development
 PORT=4001
 HOST=127.0.0.1
+
 # Set only to the address/CIDR of your trusted reverse proxy (e.g. loopback for local nginx).
 TRUST_PROXY=
+
 # Defaults to true in production, false otherwise. Build the client first when true.
 # SERVE_CLIENT=true
+
+# MongoDB connection string.
+# For Atlas, use: mongodb+srv://<user>:<password>@<cluster>.mongodb.net/<db>?retryWrites=true&w=majority
 MONGODB_URI=mongodb://127.0.0.1:27017/flowboard_mern
+
+# Client origin — MUST be HTTPS in production (required for __Host- cookie prefix).
 CLIENT_ORIGIN=http://localhost:5173
+
+# JWT signing secret — minimum 48 characters. Generate with: npm run setup
 JWT_SECRET=REPLACE_WITH_A_RANDOM_SECRET_USING_NPM_RUN_SETUP
 ```
 
@@ -4876,15 +5396,36 @@ docs/guide.template.md
 ### File: `.gitignore`
 
 ```text
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# Environment (secrets)
 .env
 .env.*
 !.env.example
+
+# Test artifacts
 coverage/
 .test-artifacts/
+
+# Local dev state
 .local/
+
+# Logs
 *.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
 ```
 
 ### File: `shared/tests/auth.test.js`
@@ -4892,7 +5433,7 @@ coverage/
 ```javascript
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { credentials } from '../schemas/auth.js';
+import { credentials, registration } from '../schemas/auth.js';
 test('shared password validation preserves Node UTF-8 byte limits in browser-safe code', () => {
   for (const password of [
     'a'.repeat(7),
@@ -4913,6 +5454,14 @@ test('shared password validation preserves Node UTF-8 byte limits in browser-saf
       expected,
     );
   }
+});
+test('registration passwords must start with a capital letter and include letters, a number, and a special character', () => {
+  const base = { name: 'Alex', email: 'person@example.com' };
+  assert.equal(registration.safeParse({ ...base, password: 'Testing123!safe' }).success, true);
+  assert.equal(registration.safeParse({ ...base, password: 'testing123!safe' }).success, false);
+  assert.equal(registration.safeParse({ ...base, password: 'TestingSafe!' }).success, false);
+  assert.equal(registration.safeParse({ ...base, password: 'Testing123safe' }).success, false);
+  assert.equal(registration.safeParse({ ...base, password: 'T1234567' }).success, false);
 });
 ```
 
@@ -5238,6 +5787,12 @@ test('UTF-8 password bounds and document limits are validated', async () => {
     password: '🧩'.repeat(25),
   });
   assert.equal(password.status, 400);
+  const weak = await protect(agent.post('/api/auth/register')).send({
+    name: 'Weak password',
+    email: 'weak@example.com',
+    password: 'password',
+  });
+  assert.equal(weak.status, 400);
   const board = new Board({
     owner: new mongoose.Types.ObjectId(),
     title: 'Limits',
@@ -5363,6 +5918,16 @@ test('an authenticated socket disconnects when its token expires', async () => {
   socket.connect();
   await ready;
   assert.equal(await event(socket, 'disconnect'), 'io server disconnect');
+});
+
+test('API reconnects to MongoDB after the connection drops', async () => {
+  const agent = request.agent(app);
+  await registerAndLogin(agent, 'reconnect-user');
+  assert.equal((await agent.get('/api/boards')).status, 200);
+  await mongoose.disconnect();
+  assert.equal(mongoose.connection.readyState, 0);
+  assert.equal((await agent.get('/api/boards')).status, 200);
+  assert.equal((await request(app).get('/api/ready')).status, 200);
 });
 ```
 
@@ -5575,7 +6140,7 @@ describe('API contract and session handling', () => {
     await userEvent.type(screen.getByRole('textbox', { name: 'Create board' }), 'Launch');
     await userEvent.click(screen.getByRole('button', { name: 'Create board' }));
     await screen.findByRole('heading', { name: 'Launch' });
-    expect(create).toHaveBeenCalledWith({ title: 'Launch' });
+    expect(create).toHaveBeenCalledWith({ title: 'Launch', template: 'kanban' });
   });
   it('shows login errors and protects boards when no session exists', async () => {
     vi.spyOn(authApi, 'me').mockRejectedValue({ status: 401 });
