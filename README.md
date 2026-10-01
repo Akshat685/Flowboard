@@ -502,11 +502,36 @@ export function createApplication() {
     helmet({
       contentSecurityPolicy: {
         directives: {
+          defaultSrc: ["'none'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          imgSrc: ["'self'", 'data:', 'blob:'],
+          fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+          connectSrc: ["'self'", 'wss://*.vercel.app'],
+          frameAncestors: ["'none'"],
+          baseUri: ["'self'"],
+          formAction: ["'self'"],
           upgradeInsecureRequests: config.NODE_ENV === 'production' ? [] : null,
         },
       },
+      // X-Frame-Options: DENY — prevents embedding in iframes
+      frameguard: { action: 'deny' },
+      // Referrer-Policy: strict-origin-when-cross-origin
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+      // Cross-Origin-Opener-Policy: same-origin
+      crossOriginOpenerPolicy: { policy: 'same-origin' },
+      // X-Content-Type-Options: nosniff (helmet default, but explicit)
+      noSniff: true,
+      // Permissions-Policy via helmet
+      permittedCrossDomainPolicies: { permittedPolicies: 'none' },
     }),
   );
+
+  // Permissions-Policy — restrict access to sensitive browser APIs
+  app.use((_req, res, next) => {
+    res.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    next();
+  });
 
   // GZIP/Brotli compression for all responses
   app.use(compression());
